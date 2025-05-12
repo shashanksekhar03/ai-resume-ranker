@@ -10,6 +10,7 @@ export interface RankedCandidate {
   strengths: string[]
   weaknesses: string[]
   analysis: string
+  categoryScores?: Record<string, number>
 }
 
 export interface RankingResult {
@@ -22,4 +23,18 @@ export interface FileUploadProps {
   accept?: string
   onChange: (file: File | null) => void
   currentFile: File | null
+}
+
+export interface WeightCategory {
+  id: string
+  name: string
+  description: string
+  weight: number
+  defaultWeight: number
+  aiSuggested?: boolean
+}
+
+export interface WeightConfig {
+  categories: WeightCategory[]
+  useCustomWeights: boolean
 }

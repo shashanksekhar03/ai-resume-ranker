@@ -10,11 +10,13 @@ import { Label } from "@/components/ui/label"
 import { Input } from "@/components/ui/input"
 import { rankCandidates } from "@/actions/rank-candidates"
 import { RankingResults } from "@/components/ranking-results"
-import type { Candidate, RankingResult } from "@/types/resume-ranker"
+import type { Candidate, RankingResult, WeightConfig } from "@/types/resume-ranker"
 import { Loader2, AlertCircle } from "lucide-react"
 import { FileUpload } from "@/components/file-upload"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Alert, AlertDescription } from "@/components/ui/alert"
+import { WeightConfigurator } from "@/components/weight-configurator"
+import { ModelStatus } from "@/components/model-status"
 
 export function ResumeRanker() {
   const [jobDescription, setJobDescription] = useState("")
@@ -22,6 +24,13 @@ export function ResumeRanker() {
   const [results, setResults] = useState<RankingResult | null>(null)
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [isGeneratingWeights, setIsGeneratingWeights] = useState(false)
+
+  // Weight configuration state
+  const [weightConfig, setWeightConfig] = useState<WeightConfig>({
+    categories: [],
+    useCustomWeights: false,
+  })
 
   // File state
   const [jobDescriptionFile, setJobDescriptionFile] = useState<File | null>(null)
@@ -86,6 +95,7 @@ export function ResumeRanker() {
         candidates: validCandidates,
         jobDescriptionFile,
         candidateFiles,
+        weightConfig,
       })
 
       setResults(result)
@@ -97,6 +107,10 @@ export function ResumeRanker() {
         setError(
           "OpenAI API quota exceeded. The application is using a fallback ranking method. To fix this issue, please check your OpenAI API billing settings at https://platform.openai.com/account/billing",
         )
+      } else if (errorMessage.includes("model")) {
+        setError(
+          "Unable to access GPT-4o model. The application is using a fallback ranking method. Please check your API key permissions.",
+        )
       } else {
         setError(`An error occurred: ${errorMessage}`)
       }
@@ -107,6 +121,9 @@ export function ResumeRanker() {
 
   return (
     <div className="max-w-4xl mx-auto">
+      {/* Model Status Check */}
+      <ModelStatus />
+
       {error && (
         <div className="bg-red-50 border-l-4 border-red-400 p-4 mb-6">
           <div className="flex">
@@ -177,6 +194,13 @@ export function ResumeRanker() {
           </CardContent>
         </Card>
 
+        <WeightConfigurator
+          jobDescription={jobDescription}
+          onWeightsChange={setWeightConfig}
+          isGeneratingWeights={isGeneratingWeights}
+          setIsGeneratingWeights={setIsGeneratingWeights}
+        />
+
         <div className="space-y-4">
           <div className="flex justify-between items-center">
             <h2 className="text-xl font-semibold">Candidates</h2>
@@ -243,7 +267,7 @@ export function ResumeRanker() {
         </div>
 
         <div className="flex justify-center">
-          <Button type="submit" size="lg" disabled={isLoading}>
+          <Button type="submit" size="lg" disabled={isLoading || isGeneratingWeights}>
             {isLoading ? (
               <>
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />

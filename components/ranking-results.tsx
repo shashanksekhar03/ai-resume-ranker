@@ -1,5 +1,6 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import type { RankingResult, RankedCandidate } from "@/types/resume-ranker"
+import { Progress } from "@/components/ui/progress"
 
 interface RankingResultsProps {
   results: RankingResult
@@ -26,6 +27,18 @@ interface CandidateCardProps {
 
 function CandidateCard({ candidate, rank }: CandidateCardProps) {
   const isFallback = isFallbackAnalysis(candidate.analysis)
+  const categoryScores = candidate.categoryScores || {}
+
+  // Map of category IDs to readable names
+  const categoryNames: Record<string, string> = {
+    technical_skills: "Technical Skills",
+    experience: "Experience",
+    education: "Education",
+    location: "Location",
+    soft_skills: "Soft Skills",
+    industry_knowledge: "Industry Knowledge",
+    certifications: "Certifications",
+  }
 
   return (
     <Card className="overflow-hidden">
@@ -51,6 +64,23 @@ function CandidateCard({ candidate, rank }: CandidateCardProps) {
       </CardHeader>
       <CardContent>
         <div className="space-y-4">
+          {Object.keys(categoryScores).length > 0 && (
+            <div className="space-y-3">
+              <h3 className="text-sm font-medium text-gray-500">Category Scores</h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {Object.entries(categoryScores).map(([category, score]) => (
+                  <div key={category} className="space-y-1">
+                    <div className="flex justify-between items-center">
+                      <span className="text-xs font-medium">{categoryNames[category] || category}</span>
+                      <span className="text-xs font-medium">{score}%</span>
+                    </div>
+                    <Progress value={score} className="h-2" />
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           <div>
             <h3 className="text-sm font-medium text-gray-500 mb-2">Strengths</h3>
             <ul className="list-disc pl-5 space-y-1">

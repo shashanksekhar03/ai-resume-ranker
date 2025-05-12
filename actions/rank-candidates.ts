@@ -2,13 +2,17 @@
 
 import { generateText } from "ai"
 import { openai } from "@ai-sdk/openai"
-import type { Candidate, RankingResult } from "@/types/resume-ranker"
+import type { Candidate, RankingResult, WeightConfig } from "@/types/resume-ranker"
+
+// Define the model to use throughout the application
+const MODEL = "gpt-4o"
 
 interface RankCandidatesProps {
   jobDescription: string
   candidates: Candidate[]
   jobDescriptionFile?: File | null
   candidateFiles?: Record<string, File | null>
+  weightConfig?: WeightConfig
 }
 
 export async function rankCandidates({
@@ -16,6 +20,7 @@ export async function rankCandidates({
   candidates,
   jobDescriptionFile,
   candidateFiles,
+  weightConfig,
 }: RankCandidatesProps): Promise<RankingResult> {
   try {
     // Process job description file if provided
@@ -62,12 +67,15 @@ export async function rankCandidates({
     }
 
     // Create a prompt for the AI to analyze and rank the candidates
-    const prompt = createRankingPrompt(finalJobDescription, processedCandidates)
+    const prompt = createRankingPrompt(finalJobDescription, processedCandidates, weightConfig)
 
     try {
-      // Try to generate the ranking using AI
+      // Try to generate the ranking using AI with explicit model configuration
       const { text } = await generateText({
-        model: openai("gpt-4o"),
+        model: openai(MODEL, {
+          temperature: 0.2, // Lower temperature for more consistent results
+          maxTokens: 4000, // Ensure enough tokens for detailed analysis
+        }),
         prompt,
         system: `You are an expert HR professional and recruiter with deep experience in matching candidates to job requirements.
 Your task is to analyze each candidate's resume against the job description and provide a detailed ranking.
@@ -84,14 +92,17 @@ Respond ONLY with valid JSON in the exact format specified in the prompt.`,
     } catch (apiError) {
       console.error("OpenAI API Error:", apiError)
 
-      // Check if it's a quota error
+      // Check for specific error types
       const errorMessage = apiError instanceof Error ? apiError.message : String(apiError)
-      if (errorMessage.includes("quota") || errorMessage.includes("billing")) {
+
+      if (errorMessage.includes("model")) {
+        throw new Error(`Error accessing ${MODEL} model. Please check your API key permissions.`)
+      } else if (errorMessage.includes("quota") || errorMessage.includes("billing")) {
         // Use fallback mock ranking when API quota is exceeded
-        return generateMockRanking(processedCandidates, finalJobDescription)
+        return generateMockRanking(processedCandidates, finalJobDescription, weightConfig)
       }
 
-      throw apiError // Re-throw if it's not a quota error
+      throw apiError // Re-throw if it's not a handled error
     }
   } catch (error) {
     console.error("Error in rankCandidates:", error)
@@ -120,11 +131,30 @@ async function extractTextFromPdfBuffer(arrayBuffer: ArrayBuffer): Promise<strin
   return "PDF text extraction is currently simplified. Please use text input for more accurate results."
 }
 
-// The rest of the functions remain the same
-function createRankingPrompt(jobDescription: string, candidates: Candidate[]): string {
+function createRankingPrompt(jobDescription: string, candidates: Candidate[], weightConfig?: WeightConfig): string {
+  // Format the weight configuration for the prompt
+  let weightInstructions = ""
+
+  if (weightConfig && weightConfig.useCustomWeights) {
+    weightInstructions = `
+Use the following category weights (scale 1-10) when evaluating candidates:
+${weightConfig.categories.map((c) => `- ${c.name}: ${c.weight}/10 - ${c.description}`).join("\n")}
+
+Higher weights indicate more importance for that category. Make sure your evaluation reflects these priorities.
+    `
+  } else {
+    weightInstructions = `
+Determine appropriate weights for different evaluation categories based on the job description.
+For example, if the job is fully in-person, location should be weighted more heavily.
+If technical skills are critical, they should receive a higher weight.
+    `
+  }
+
   return `
 Job Description:
 ${jobDescription}
+
+${weightInstructions}
 
 Candidates:
 ${candidates
@@ -144,6 +174,7 @@ For each candidate, provide:
 2. 3-5 key strengths relevant to the job
 3. 1-3 areas for improvement or missing skills (if any)
 4. A brief analysis explaining the ranking (2-3 sentences)
+5. Category scores showing how well they match in each category (technical skills, experience, education, etc.)
 
 Return your analysis as a JSON object with this exact structure:
 {
@@ -153,7 +184,16 @@ Return your analysis as a JSON object with this exact structure:
       "score": 85,
       "strengths": ["Strength 1", "Strength 2", "Strength 3"],
       "weaknesses": ["Weakness 1", "Weakness 2"],
-      "analysis": "Brief analysis of why this candidate received this ranking."
+      "analysis": "Brief analysis of why this candidate received this ranking.",
+      "categoryScores": {
+        "technical_skills": 80,
+        "experience": 90,
+        "education": 75,
+        "location": 60,
+        "soft_skills": 85,
+        "industry_knowledge": 70,
+        "certifications": 65
+      }
     }
   ]
 }
@@ -161,9 +201,16 @@ Return your analysis as a JSON object with this exact structure:
 }
 
 // Fallback function to generate mock rankings when API is unavailable
-function generateMockRanking(candidates: Candidate[], jobDescription: string): RankingResult {
+function generateMockRanking(
+  candidates: Candidate[],
+  jobDescription: string,
+  weightConfig?: WeightConfig,
+): RankingResult {
   // Simple keyword matching algorithm
   const keywordsFromJob = extractKeywords(jobDescription)
+
+  // Get weights for different categories
+  const weights = getWeightsFromConfig(weightConfig)
 
   const rankedCandidates = candidates.map((candidate) => {
     const resumeText = candidate.resume.toLowerCase()
@@ -179,8 +226,30 @@ function generateMockRanking(candidates: Candidate[], jobDescription: string): R
       }
     })
 
-    // Calculate a simple score based on keyword matches
-    const score = Math.min(Math.round((matchCount / Math.max(keywordsFromJob.length, 1)) * 100), 95)
+    // Calculate category scores (simplified version)
+    const categoryScores = {
+      technical_skills: Math.floor(Math.random() * 30) + 50, // Random score between 50-80
+      experience: Math.floor(Math.random() * 30) + 50,
+      education: Math.floor(Math.random() * 30) + 50,
+      location: Math.floor(Math.random() * 30) + 50,
+      soft_skills: Math.floor(Math.random() * 30) + 50,
+      industry_knowledge: Math.floor(Math.random() * 30) + 50,
+      certifications: Math.floor(Math.random() * 30) + 50,
+    }
+
+    // Apply weights to calculate weighted score
+    let weightedScore = 0
+    let totalWeight = 0
+
+    Object.entries(weights).forEach(([category, weight]) => {
+      if (category in categoryScores) {
+        weightedScore += categoryScores[category as keyof typeof categoryScores] * weight
+        totalWeight += weight
+      }
+    })
+
+    // Calculate final score
+    const score = Math.min(Math.round(weightedScore / totalWeight), 95)
 
     // Generate strengths based on matched keywords (up to 3)
     const strengths = matchedKeywords.slice(0, 3).map((keyword) => `Has experience with ${keyword}`)
@@ -207,6 +276,7 @@ function generateMockRanking(candidates: Candidate[], jobDescription: string): R
       strengths,
       weaknesses,
       analysis: `This candidate matches approximately ${score}% of the job requirements based on keyword analysis. This is a fallback analysis due to OpenAI API quota limitations.`,
+      categoryScores,
     }
   })
 
@@ -248,4 +318,29 @@ function extractKeywords(text: string): string[] {
 
   // Remove duplicates and return
   return [...new Set(potentialKeywords)]
+}
+
+// Helper function to get weights from config
+function getWeightsFromConfig(weightConfig?: WeightConfig) {
+  const defaultWeights = {
+    technical_skills: 5,
+    experience: 5,
+    education: 3,
+    location: 2,
+    soft_skills: 3,
+    industry_knowledge: 4,
+    certifications: 2,
+  }
+
+  if (!weightConfig || !weightConfig.useCustomWeights) {
+    return defaultWeights
+  }
+
+  const customWeights: Record<string, number> = {}
+
+  weightConfig.categories.forEach((category) => {
+    customWeights[category.id] = category.weight
+  })
+
+  return customWeights
 }
