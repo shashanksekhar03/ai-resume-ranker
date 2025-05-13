@@ -5,18 +5,19 @@ import type React from "react"
 import { useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
-import { Card, CardContent } from "@/components/ui/card"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Label } from "@/components/ui/label"
 import { Input } from "@/components/ui/input"
 import { rankCandidates } from "@/actions/rank-candidates"
 import { RankingResults } from "@/components/ranking-results"
 import type { Candidate, RankingResult, WeightConfig } from "@/types/resume-ranker"
-import { Loader2, AlertCircle } from "lucide-react"
+import { Loader2, AlertCircle, UserPlus } from "lucide-react"
 import { FileUpload } from "@/components/file-upload"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { WeightConfigurator } from "@/components/weight-configurator"
 import { ModelStatus } from "@/components/model-status"
+import { Separator } from "@/components/ui/separator"
 
 export function ResumeRanker() {
   const [jobDescription, setJobDescription] = useState("")
@@ -73,17 +74,17 @@ export function ResumeRanker() {
 
     // Validate inputs
     if (!jobDescription.trim() && !jobDescriptionFile) {
-      alert("Please enter a job description or upload a PDF")
+      alert("Please enter a job description or upload a file")
       return
     }
 
     const validCandidates = candidates.filter((c) => {
-      // A candidate is valid if they have a name AND either resume text OR a PDF file
+      // A candidate is valid if they have a name AND either resume text OR a file
       return c.name.trim() && (c.resume.trim() || candidateFiles[c.id])
     })
 
     if (validCandidates.length < 1) {
-      alert("Please enter at least one candidate with name and resume (text or PDF)")
+      alert("Please enter at least one candidate with name and resume (text or file)")
       return
     }
 
@@ -152,23 +153,26 @@ export function ResumeRanker() {
       <Alert className="mb-6 bg-amber-50 border-amber-200">
         <AlertCircle className="h-4 w-4 text-amber-600" />
         <AlertDescription className="text-amber-800">
-          PDF upload functionality is currently limited in this preview. For best results, please use the text input
+          File upload functionality is currently limited in this preview. For best results, please use the text input
           option.
         </AlertDescription>
       </Alert>
 
       <form onSubmit={handleSubmit} className="space-y-8">
+        {/* Job Description Section */}
         <Card>
-          <CardContent className="pt-6">
+          <CardHeader className="pb-3">
+            <CardTitle>Job Description</CardTitle>
+          </CardHeader>
+          <CardContent>
             <div className="space-y-4">
               <Tabs defaultValue="text" className="w-full">
                 <TabsList className="mb-4">
                   <TabsTrigger value="text">Enter Text</TabsTrigger>
-                  <TabsTrigger value="pdf">Upload PDF</TabsTrigger>
+                  <TabsTrigger value="file">Upload File</TabsTrigger>
                 </TabsList>
                 <TabsContent value="text">
                   <div>
-                    <Label htmlFor="job-description">Job Description</Label>
                     <Textarea
                       id="job-description"
                       placeholder="Paste the job description here..."
@@ -178,15 +182,15 @@ export function ResumeRanker() {
                     />
                   </div>
                 </TabsContent>
-                <TabsContent value="pdf">
+                <TabsContent value="file">
                   <FileUpload
                     id="job-description-file"
-                    label="Upload Job Description PDF"
+                    label="Upload Job Description (PDF, DOC, or DOCX)"
                     onChange={setJobDescriptionFile}
                     currentFile={jobDescriptionFile}
                   />
                   <p className="text-sm text-amber-600 mt-2">
-                    Note: PDF text extraction is simplified in this preview. For best results, copy-paste the text.
+                    Note: File text extraction is simplified in this preview. For best results, copy-paste the text.
                   </p>
                 </TabsContent>
               </Tabs>
@@ -194,6 +198,7 @@ export function ResumeRanker() {
           </CardContent>
         </Card>
 
+        {/* Weights Section */}
         <WeightConfigurator
           jobDescription={jobDescription}
           onWeightsChange={setWeightConfig}
@@ -201,71 +206,76 @@ export function ResumeRanker() {
           setIsGeneratingWeights={setIsGeneratingWeights}
         />
 
-        <div className="space-y-4">
-          <div className="flex justify-between items-center">
-            <h2 className="text-xl font-semibold">Candidates</h2>
-            <Button type="button" onClick={addCandidate} variant="outline">
-              Add Candidate
-            </Button>
-          </div>
+        {/* Candidates Section */}
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle>Candidates</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-6">
+            {candidates.map((candidate, index) => (
+              <div key={candidate.id} className="space-y-4">
+                {index > 0 && <Separator className="my-6" />}
 
-          {candidates.map((candidate, index) => (
-            <Card key={candidate.id}>
-              <CardContent className="pt-6">
-                <div className="space-y-4">
-                  <div className="flex justify-between items-center">
-                    <h3 className="font-medium">Candidate {index + 1}</h3>
-                    {candidates.length > 1 && (
-                      <Button type="button" variant="ghost" size="sm" onClick={() => removeCandidate(candidate.id)}>
-                        Remove
-                      </Button>
-                    )}
-                  </div>
-                  <div>
-                    <Label htmlFor={`name-${candidate.id}`}>Name</Label>
-                    <Input
-                      id={`name-${candidate.id}`}
-                      placeholder="Candidate name"
-                      value={candidate.name}
-                      onChange={(e) => updateCandidate(candidate.id, "name", e.target.value)}
-                    />
-                  </div>
-
-                  <Tabs defaultValue="text" className="w-full">
-                    <TabsList className="mb-4">
-                      <TabsTrigger value="text">Enter Resume Text</TabsTrigger>
-                      <TabsTrigger value="pdf">Upload Resume PDF</TabsTrigger>
-                    </TabsList>
-                    <TabsContent value="text">
-                      <div>
-                        <Label htmlFor={`resume-${candidate.id}`}>Resume</Label>
-                        <Textarea
-                          id={`resume-${candidate.id}`}
-                          placeholder="Paste the candidate's resume here..."
-                          className="min-h-[150px]"
-                          value={candidate.resume}
-                          onChange={(e) => updateCandidate(candidate.id, "resume", e.target.value)}
-                        />
-                      </div>
-                    </TabsContent>
-                    <TabsContent value="pdf">
-                      <FileUpload
-                        id={`resume-file-${candidate.id}`}
-                        label="Upload Resume PDF"
-                        onChange={(file) => updateCandidateFile(candidate.id, file)}
-                        currentFile={candidateFiles[candidate.id] || null}
-                      />
-                      <p className="text-sm text-amber-600 mt-2">
-                        Note: PDF text extraction is simplified in this preview. For best results, copy-paste the text.
-                      </p>
-                    </TabsContent>
-                  </Tabs>
+                <div className="flex justify-between items-center">
+                  <h3 className="font-medium text-lg flex items-center">Candidate {index + 1}</h3>
+                  {candidates.length > 1 && (
+                    <Button type="button" variant="ghost" size="sm" onClick={() => removeCandidate(candidate.id)}>
+                      Remove
+                    </Button>
+                  )}
                 </div>
-              </CardContent>
-            </Card>
-          ))}
-        </div>
 
+                <div>
+                  <Label htmlFor={`name-${candidate.id}`}>Name</Label>
+                  <Input
+                    id={`name-${candidate.id}`}
+                    placeholder="Candidate name"
+                    value={candidate.name}
+                    onChange={(e) => updateCandidate(candidate.id, "name", e.target.value)}
+                  />
+                </div>
+
+                <Tabs defaultValue="text" className="w-full">
+                  <TabsList className="mb-4">
+                    <TabsTrigger value="text">Enter Resume Text</TabsTrigger>
+                    <TabsTrigger value="file">Upload Resume</TabsTrigger>
+                  </TabsList>
+                  <TabsContent value="text">
+                    <div>
+                      <Label htmlFor={`resume-${candidate.id}`}>Resume</Label>
+                      <Textarea
+                        id={`resume-${candidate.id}`}
+                        placeholder="Paste the candidate's resume here..."
+                        className="min-h-[150px]"
+                        value={candidate.resume}
+                        onChange={(e) => updateCandidate(candidate.id, "resume", e.target.value)}
+                      />
+                    </div>
+                  </TabsContent>
+                  <TabsContent value="file">
+                    <FileUpload
+                      id={`resume-file-${candidate.id}`}
+                      label="Upload Resume (PDF, DOC, or DOCX)"
+                      onChange={(file) => updateCandidateFile(candidate.id, file)}
+                      currentFile={candidateFiles[candidate.id] || null}
+                    />
+                    <p className="text-sm text-amber-600 mt-2">
+                      Note: File text extraction is simplified in this preview. For best results, copy-paste the text.
+                    </p>
+                  </TabsContent>
+                </Tabs>
+              </div>
+            ))}
+
+            {/* Add Candidate Button - Now at the bottom */}
+            <Button type="button" onClick={addCandidate} variant="outline" className="w-full mt-4">
+              <UserPlus className="mr-2 h-4 w-4" />
+              Add Another Candidate
+            </Button>
+          </CardContent>
+        </Card>
+
+        {/* Submit Button */}
         <div className="flex justify-center">
           <Button type="submit" size="lg" disabled={isLoading || isGeneratingWeights}>
             {isLoading ? (
@@ -280,6 +290,7 @@ export function ResumeRanker() {
         </div>
       </form>
 
+      {/* Results Section */}
       {results && !isLoading && (
         <div className="mt-12">
           <RankingResults results={results} />

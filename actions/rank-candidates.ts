@@ -15,6 +15,27 @@ interface RankCandidatesProps {
   weightConfig?: WeightConfig
 }
 
+// Simple function to extract text from document files
+async function extractTextFromFile(file: File): Promise<string> {
+  try {
+    const fileName = file.name.toLowerCase()
+
+    // For simplicity in the browser environment, we'll use a basic approach
+    // In a production app, you would use proper document parsing libraries on the server
+
+    if (fileName.endsWith(".pdf")) {
+      return "PDF text extraction is currently simplified. For best results, copy-paste the text."
+    } else if (fileName.endsWith(".doc") || fileName.endsWith(".docx")) {
+      return "Word document text extraction is currently simplified. For best results, copy-paste the text."
+    } else {
+      return "Unsupported file format. Please use PDF, DOC, or DOCX files, or paste the text directly."
+    }
+  } catch (error) {
+    console.error("Document extraction error:", error)
+    return ""
+  }
+}
+
 export async function rankCandidates({
   jobDescription,
   candidates,
@@ -27,14 +48,14 @@ export async function rankCandidates({
     let finalJobDescription = jobDescription
     if (jobDescriptionFile) {
       try {
-        // Extract text directly without using the PDF parser
-        const text = await extractTextFromPdf(jobDescriptionFile)
+        // Extract text from the file
+        const text = await extractTextFromFile(jobDescriptionFile)
         if (text && text.trim()) {
           finalJobDescription = text
         }
       } catch (error) {
-        console.error("Error processing job description PDF:", error)
-        // Fall back to text input if PDF parsing fails
+        console.error("Error processing job description file:", error)
+        // Fall back to text input if file parsing fails
       }
     }
 
@@ -45,8 +66,8 @@ export async function rankCandidates({
       for (const [id, file] of Object.entries(candidateFiles)) {
         if (file) {
           try {
-            // Extract text directly without using the PDF parser
-            const text = await extractTextFromPdf(file)
+            // Extract text from the file
+            const text = await extractTextFromFile(file)
 
             if (text && text.trim()) {
               // Find and update the corresponding candidate
@@ -59,8 +80,8 @@ export async function rankCandidates({
               }
             }
           } catch (error) {
-            console.error(`Error processing PDF for candidate ${id}:`, error)
-            // Keep existing text input if PDF parsing fails
+            console.error(`Error processing file for candidate ${id}:`, error)
+            // Keep existing text input if file parsing fails
           }
         }
       }
