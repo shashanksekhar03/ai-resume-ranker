@@ -6,7 +6,7 @@ import { CheckCircle, AlertCircle, Loader2 } from "lucide-react"
 import { checkModelAccess } from "@/actions/check-model-access"
 
 export function ModelStatus() {
-  const [status, setStatus] = useState<"loading" | "success" | "error">("loading")
+  const [status, setStatus] = useState<"loading" | "success" | "error" | "warning">("loading")
   const [message, setMessage] = useState<string>("")
 
   useEffect(() => {
@@ -16,6 +16,10 @@ export function ModelStatus() {
         if (result.success) {
           setStatus("success")
           setMessage(`Successfully connected to ${result.model}`)
+        } else if (result.error && result.error.includes("doesn't have access")) {
+          // API key works but doesn't have access to the preferred model
+          setStatus("warning")
+          setMessage(result.error)
         } else {
           setStatus("error")
           setMessage(result.error || "Failed to access the required model")
@@ -33,7 +37,7 @@ export function ModelStatus() {
     return (
       <Alert className="mb-6 bg-blue-50 border-blue-200">
         <Loader2 className="h-4 w-4 text-blue-600 animate-spin" />
-        <AlertDescription className="text-blue-800">Verifying API access to GPT-4o...</AlertDescription>
+        <AlertDescription className="text-blue-800">Verifying API access...</AlertDescription>
       </Alert>
     )
   }
@@ -43,7 +47,18 @@ export function ModelStatus() {
       <Alert className="mb-6 bg-red-50 border-red-200">
         <AlertCircle className="h-4 w-4 text-red-600" />
         <AlertDescription className="text-red-800">
-          {message}. The application will use fallback methods if needed.
+          {message}. The application will use fallback methods for ranking.
+        </AlertDescription>
+      </Alert>
+    )
+  }
+
+  if (status === "warning") {
+    return (
+      <Alert className="mb-6 bg-amber-50 border-amber-200">
+        <AlertCircle className="h-4 w-4 text-amber-600" />
+        <AlertDescription className="text-amber-800">
+          {message} The application will still work, but with potentially lower quality results.
         </AlertDescription>
       </Alert>
     )

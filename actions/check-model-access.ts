@@ -2,9 +2,7 @@
 
 import { generateText } from "ai"
 import { openai } from "@ai-sdk/openai"
-
-// Define the model to use throughout the application
-const MODEL = "gpt-4o"
+import { MODEL, FALLBACK_MODEL, OPENAI_API_KEY } from "@/lib/ai-config"
 
 interface ModelAccessResult {
   success: boolean
@@ -14,22 +12,58 @@ interface ModelAccessResult {
 
 export async function checkModelAccess(): Promise<ModelAccessResult> {
   try {
-    // Try a simple generation to check if we have access to the model
-    const { text } = await generateText({
-      model: openai(MODEL),
-      prompt: "Respond with 'OK' if you can read this message.",
-      maxTokens: 5,
-    })
+    // Try to use the model with the AI SDK
+    try {
+      const { text } = await generateText({
+        model: openai(FALLBACK_MODEL, {
+          apiKey: OPENAI_API_KEY,
+        }),
+        prompt: "Respond with 'OK' if you can read this message.",
+      })
 
-    if (text.includes("OK")) {
-      return {
-        success: true,
-        model: MODEL,
+      if (text.toLowerCase().includes("ok")) {
+        // If basic model works, try the advanced model
+        try {
+          await generateText({
+            model: openai(MODEL, {
+              apiKey: OPENAI_API_KEY,
+            }),
+            prompt: "Test",
+          })
+
+          return {
+            success: true,
+            model: MODEL,
+          }
+        } catch (advancedModelError) {
+          console.error("Error accessing advanced model:", advancedModelError)
+          return {
+            success: false,
+            error: `Your API key works, but doesn't have access to ${MODEL}. Using fallback model instead.`,
+          }
+        }
+      } else {
+        return {
+          success: false,
+          error: "Unexpected response from model",
+        }
       }
-    } else {
+    } catch (modelError: any) {
+      console.error("Error using model:", modelError)
+
+      // Extract the most useful error message
+      let errorMessage = "Unknown error occurred"
+      if (modelError?.message) {
+        errorMessage = modelError.message
+      } else if (typeof modelError === "object" && modelError?.error?.message) {
+        errorMessage = modelError.error.message
+      } else if (typeof modelError === "string") {
+        errorMessage = modelError
+      }
+
       return {
         success: false,
-        error: "Unexpected response from model",
+        error: `Error using model: ${errorMessage}`,
       }
     }
   } catch (error) {

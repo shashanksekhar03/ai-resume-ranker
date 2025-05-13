@@ -1,4 +1,5 @@
-import { ResumeRanker } from "@/components/resume-ranker"
+import { ErrorBoundary } from "@/components/error-boundary"
+import { ResumeRankerWrapper } from "@/components/resume-ranker-wrapper"
 
 export default function Home() {
   return (
@@ -8,7 +9,9 @@ export default function Home() {
         Upload a job description and candidate resumes to get AI-powered rankings based on how well each candidate
         matches the requirements.
       </p>
-      <ResumeRanker />
+      <ErrorBoundary>
+        <ResumeRankerWrapper />
+      </ErrorBoundary>
     </main>
   )
 }

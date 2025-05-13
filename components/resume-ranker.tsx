@@ -2,7 +2,7 @@
 
 import type React from "react"
 
-import { useState } from "react"
+import { useState, useCallback } from "react"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -37,36 +37,43 @@ export function ResumeRanker() {
   const [jobDescriptionFile, setJobDescriptionFile] = useState<File | null>(null)
   const [candidateFiles, setCandidateFiles] = useState<Record<string, File | null>>({})
 
-  const addCandidate = () => {
+  const addCandidate = useCallback(() => {
     const newId = Date.now().toString()
-    setCandidates([...candidates, { id: newId, name: "", resume: "" }])
-    setCandidateFiles({
-      ...candidateFiles,
+    setCandidates((prev) => [...prev, { id: newId, name: "", resume: "" }])
+    setCandidateFiles((prev) => ({
+      ...prev,
       [newId]: null,
-    })
-  }
+    }))
+  }, [])
 
-  const removeCandidate = (id: string) => {
-    if (candidates.length > 1) {
-      setCandidates(candidates.filter((candidate) => candidate.id !== id))
+  const removeCandidate = useCallback(
+    (id: string) => {
+      if (candidates.length > 1) {
+        setCandidates((prev) => prev.filter((candidate) => candidate.id !== id))
 
-      // Remove the file for this candidate
-      const updatedFiles = { ...candidateFiles }
-      delete updatedFiles[id]
-      setCandidateFiles(updatedFiles)
-    }
-  }
+        // Remove the file for this candidate
+        setCandidateFiles((prev) => {
+          const updated = { ...prev }
+          delete updated[id]
+          return updated
+        })
+      }
+    },
+    [candidates.length],
+  )
 
-  const updateCandidate = (id: string, field: "name" | "resume", value: string) => {
-    setCandidates(candidates.map((candidate) => (candidate.id === id ? { ...candidate, [field]: value } : candidate)))
-  }
+  const updateCandidate = useCallback((id: string, field: "name" | "resume", value: string) => {
+    setCandidates((prev) =>
+      prev.map((candidate) => (candidate.id === id ? { ...candidate, [field]: value } : candidate)),
+    )
+  }, [])
 
-  const updateCandidateFile = (id: string, file: File | null) => {
-    setCandidateFiles({
-      ...candidateFiles,
+  const updateCandidateFile = useCallback((id: string, file: File | null) => {
+    setCandidateFiles((prev) => ({
+      ...prev,
       [id]: file,
-    })
-  }
+    }))
+  }, [])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -99,22 +106,17 @@ export function ResumeRanker() {
         weightConfig,
       })
 
+      // Validate the result
+      if (!result || !result.rankedCandidates || !Array.isArray(result.rankedCandidates)) {
+        throw new Error("Invalid response format from ranking service")
+      }
+
       setResults(result)
     } catch (error) {
       console.error("Error ranking candidates:", error)
       const errorMessage = error instanceof Error ? error.message : String(error)
 
-      if (errorMessage.includes("quota") || errorMessage.includes("billing")) {
-        setError(
-          "OpenAI API quota exceeded. The application is using a fallback ranking method. To fix this issue, please check your OpenAI API billing settings at https://platform.openai.com/account/billing",
-        )
-      } else if (errorMessage.includes("model")) {
-        setError(
-          "Unable to access GPT-4o model. The application is using a fallback ranking method. Please check your API key permissions.",
-        )
-      } else {
-        setError(`An error occurred: ${errorMessage}`)
-      }
+      setError(`An error occurred while ranking candidates: ${errorMessage}`)
     } finally {
       setIsLoading(false)
     }
@@ -139,12 +141,7 @@ export function ResumeRanker() {
             </div>
             <div className="ml-3">
               <p className="text-sm text-red-700">{error}</p>
-              {error.includes("quota") && (
-                <p className="mt-2 text-sm text-red-700">
-                  The application is using a simplified fallback ranking method. For more accurate results, please
-                  update your OpenAI API billing.
-                </p>
-              )}
+              <p className="mt-2 text-sm text-red-700">Please try again or contact support if the issue persists.</p>
             </div>
           </div>
         </div>

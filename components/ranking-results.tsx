@@ -7,6 +7,21 @@ interface RankingResultsProps {
 }
 
 export function RankingResults({ results }: RankingResultsProps) {
+  // Validate results
+  if (
+    !results ||
+    !results.rankedCandidates ||
+    !Array.isArray(results.rankedCandidates) ||
+    results.rankedCandidates.length === 0
+  ) {
+    return (
+      <div className="space-y-6">
+        <h2 className="text-2xl font-bold text-center">No Results Available</h2>
+        <p className="text-center text-gray-500">No ranking results are available. Please try again.</p>
+      </div>
+    )
+  }
+
   return (
     <div className="space-y-6">
       <h2 className="text-2xl font-bold text-center">Ranking Results</h2>
@@ -26,8 +41,15 @@ interface CandidateCardProps {
 }
 
 function CandidateCard({ candidate, rank }: CandidateCardProps) {
-  const isFallback = isFallbackAnalysis(candidate.analysis)
+  // Validate candidate data
+  const name = candidate.name || "Unnamed Candidate"
+  const score = typeof candidate.score === "number" ? candidate.score : 0
+  const strengths = Array.isArray(candidate.strengths) ? candidate.strengths : []
+  const weaknesses = Array.isArray(candidate.weaknesses) ? candidate.weaknesses : []
+  const analysis = candidate.analysis || "No analysis available"
   const categoryScores = candidate.categoryScores || {}
+
+  const isFallback = isFallbackAnalysis(analysis)
 
   // Map of category IDs to readable names
   const categoryNames: Record<string, string> = {
@@ -46,10 +68,10 @@ function CandidateCard({ candidate, rank }: CandidateCardProps) {
         <div className="flex items-start justify-between">
           <div>
             <CardTitle className="text-xl">
-              {rank}. {candidate.name}
+              {rank}. {name}
             </CardTitle>
             <div className="mt-1 flex items-center">
-              <div className="text-sm font-medium text-green-600">Match Score: {candidate.score}%</div>
+              <div className="text-sm font-medium text-green-600">Match Score: {score}%</div>
               {isFallback && (
                 <span className="ml-2 px-2 py-0.5 text-xs rounded-full bg-yellow-100 text-yellow-800">
                   Fallback Ranking
@@ -74,29 +96,31 @@ function CandidateCard({ candidate, rank }: CandidateCardProps) {
                       <span className="text-xs font-medium">{categoryNames[category] || category}</span>
                       <span className="text-xs font-medium">{score}%</span>
                     </div>
-                    <Progress value={score} className="h-2" />
+                    <Progress value={Number(score)} className="h-2" />
                   </div>
                 ))}
               </div>
             </div>
           )}
 
-          <div>
-            <h3 className="text-sm font-medium text-gray-500 mb-2">Strengths</h3>
-            <ul className="list-disc pl-5 space-y-1">
-              {candidate.strengths.map((strength, i) => (
-                <li key={i} className="text-sm">
-                  {strength}
-                </li>
-              ))}
-            </ul>
-          </div>
+          {strengths.length > 0 && (
+            <div>
+              <h3 className="text-sm font-medium text-gray-500 mb-2">Strengths</h3>
+              <ul className="list-disc pl-5 space-y-1">
+                {strengths.map((strength, i) => (
+                  <li key={i} className="text-sm">
+                    {strength}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
 
-          {candidate.weaknesses.length > 0 && (
+          {weaknesses.length > 0 && (
             <div>
               <h3 className="text-sm font-medium text-gray-500 mb-2">Areas for Improvement</h3>
               <ul className="list-disc pl-5 space-y-1">
-                {candidate.weaknesses.map((weakness, i) => (
+                {weaknesses.map((weakness, i) => (
                   <li key={i} className="text-sm">
                     {weakness}
                   </li>
@@ -107,7 +131,7 @@ function CandidateCard({ candidate, rank }: CandidateCardProps) {
 
           <div>
             <h3 className="text-sm font-medium text-gray-500 mb-2">Analysis</h3>
-            <p className="text-sm">{candidate.analysis}</p>
+            <p className="text-sm">{analysis}</p>
           </div>
         </div>
       </CardContent>
@@ -142,5 +166,7 @@ function getRankLabel(rank: number): string {
 }
 
 function isFallbackAnalysis(analysis: string): boolean {
-  return analysis.includes("fallback analysis") || analysis.includes("API quota")
+  return (
+    analysis.includes("fallback analysis") || analysis.includes("API quota") || analysis.includes("built-in algorithm")
+  )
 }
