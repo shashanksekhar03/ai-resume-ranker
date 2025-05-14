@@ -448,7 +448,16 @@ export function ResumeRanker() {
       console.error("Error ranking candidates:", error)
       const errorMessage = error instanceof Error ? error.message : String(error)
 
-      setError(`An error occurred while ranking candidates: ${errorMessage}`)
+      // Provide a more user-friendly error message
+      if (errorMessage.includes("timeout")) {
+        setError("The ranking process took too long to complete. Please try with fewer candidates or shorter resumes.")
+      } else if (errorMessage.includes("network") || errorMessage.includes("fetch")) {
+        setError("A network error occurred. Please check your internet connection and try again.")
+      } else if (errorMessage.includes("JSON")) {
+        setError("There was an issue processing the AI response. Please try again.")
+      } else {
+        setError(`An error occurred while ranking candidates: ${errorMessage}`)
+      }
     } finally {
       setIsLoading(false)
     }

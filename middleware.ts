@@ -10,9 +10,10 @@ export function middleware(request: NextRequest) {
   // Set the API key as a header that our server components can access
   try {
     // Ensure we're using the correct API key
-    const apiKey = OPENAI_API_KEY || process.env.OPENAI_API_KEY
+    const apiKey = OPENAI_API_KEY
 
     if (apiKey) {
+      // Set the API key in headers
       response.headers.set("x-openai-api-key", apiKey)
 
       // Also set it as an environment variable for server components
@@ -27,7 +28,7 @@ export function middleware(request: NextRequest) {
   return response
 }
 
-// Configure the middleware to run on specific paths
+// Configure the middleware to run on all paths except static assets
 export const config = {
   matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
 }

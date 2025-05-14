@@ -38,6 +38,11 @@ function extractJsonFromResponse(text: string): string {
     return objectMatch[1].trim()
   }
 
+  // If the text already looks like JSON, return it as is
+  if (text.trim().startsWith("{") && text.trim().endsWith("}")) {
+    return text.trim()
+  }
+
   // Otherwise return the original text
   return text.trim()
 }
@@ -326,18 +331,57 @@ function processAIResponse(
           .replace(/,\s*}/g, "}")
           .replace(/,\s*]/g, "]")
           .replace(/(['"])?([a-zA-Z0-9_]+)(['"])?:/g, '"$2":')
+          .replace(/\\"/g, '"')
+          .replace(/"{/g, "{")
+          .replace(/}"/g, "}")
 
         try {
           result = JSON.parse(fixedText) as RankingResult
         } catch (secondError) {
           console.error("Second JSON parse error:", secondError)
-          throw jsonError // Throw the original error if the fix didn't work
+
+          // Try one more approach - look for valid JSON within the text
+          try {
+            const jsonStart = cleanedText.indexOf("{")
+            const jsonEnd = cleanedText.lastIndexOf("}")
+
+            if (jsonStart !== -1 && jsonEnd !== -1 && jsonEnd > jsonStart) {
+              const extractedJson = cleanedText.substring(jsonStart, jsonEnd + 1)
+              result = JSON.parse(extractedJson) as RankingResult
+            } else {
+              throw new Error("Could not extract valid JSON")
+            }
+          } catch (thirdError) {
+            console.error("Third JSON parse error:", thirdError)
+            throw jsonError // Throw the original error if all fixes didn't work
+          }
         }
       }
 
       // Validate the result structure
-      if (!result.rankedCandidates || !Array.isArray(result.rankedCandidates) || result.rankedCandidates.length === 0) {
-        console.error("Invalid response structure from AI", cleanedText)
+      if (!result) {
+        console.error("Empty result after parsing")
+        return generateMockRanking(validCandidates, jobDescription, weightConfig)
+      }
+
+      if (!result.rankedCandidates) {
+        console.error("Missing rankedCandidates in result:", result)
+
+        // Try to extract from a different property if available
+        if (result.candidates && Array.isArray(result.candidates)) {
+          result.rankedCandidates = result.candidates
+        } else {
+          return generateMockRanking(validCandidates, jobDescription, weightConfig)
+        }
+      }
+
+      if (!Array.isArray(result.rankedCandidates)) {
+        console.error("rankedCandidates is not an array:", result.rankedCandidates)
+        return generateMockRanking(validCandidates, jobDescription, weightConfig)
+      }
+
+      if (result.rankedCandidates.length === 0) {
+        console.error("Empty rankedCandidates array")
         return generateMockRanking(validCandidates, jobDescription, weightConfig)
       }
 
