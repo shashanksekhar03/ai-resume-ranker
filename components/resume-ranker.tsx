@@ -24,21 +24,19 @@ import {
   extractNameFromFilename,
 } from "@/utils/name-detector"
 import { parseDocument } from "@/utils/document-parser"
+import { MultiFileUpload } from "@/components/multi-file-upload"
 
 export function ResumeRanker() {
-  // Initialize with 3 candidates instead of 1
+  // Initialize with empty candidates array instead of 3 default candidates
   const [jobDescription, setJobDescription] = useState("")
-  const [candidates, setCandidates] = useState<Candidate[]>([
-    { id: "1", name: "", resume: "" },
-    { id: "2", name: "", resume: "" },
-    { id: "3", name: "", resume: "" },
-  ])
+  const [candidates, setCandidates] = useState<Candidate[]>([])
   const [results, setResults] = useState<RankingResult | null>(null)
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [isGeneratingWeights, setIsGeneratingWeights] = useState(false)
   const [detectedNames, setDetectedNames] = useState<Record<string, boolean>>({})
   const [fileProcessingStatus, setFileProcessingStatus] = useState<Record<string, string>>({})
+  const [isBulkProcessing, setIsBulkProcessing] = useState(false)
 
   // Weight configuration state
   const [weightConfig, setWeightConfig] = useState<WeightConfig>({
@@ -267,6 +265,106 @@ export function ResumeRanker() {
     }
   }, [])
 
+  const handleMultipleFiles = useCallback(
+    async (files: File[]) => {
+      if (files.length === 0) return
+
+      setIsBulkProcessing(true)
+
+      try {
+        const newCandidates: Candidate[] = []
+        const newCandidateFiles: Record<string, File> = {}
+        const newFileStatuses: Record<string, string> = {}
+        const newDetectedNames: Record<string, boolean> = {}
+
+        // Process files in batches to avoid overwhelming the browser
+        // This helps prevent memory issues with many large files
+        const batchSize = 3
+        for (let i = 0; i < files.length; i += batchSize) {
+          const batch = files.slice(i, i + batchSize)
+
+          // Process each file in the batch concurrently
+          await Promise.all(
+            batch.map(async (file) => {
+              try {
+                const candidateId = Date.now().toString() + Math.random().toString(36).substring(2, 9)
+
+                newCandidateFiles[candidateId] = file
+                newFileStatuses[candidateId] = "processing"
+
+                // Extract text from the file
+                const extractedText = await parseDocument(file)
+
+                if (extractedText && extractedText.trim()) {
+                  // Try to detect the name from the extracted text
+                  const { name, confidence } = detectNameFromResume(extractedText)
+
+                  let candidateName = ""
+
+                  if (name && confidence > 0.4) {
+                    candidateName = name
+                    newDetectedNames[candidateId] = true
+                  } else {
+                    // Try to extract email and generate name from it
+                    const email = extractEmail(extractedText)
+                    if (email) {
+                      const generatedName = generateNameFromEmail(email)
+                      if (generatedName) {
+                        candidateName = generatedName
+                        newDetectedNames[candidateId] = true
+                      }
+                    }
+
+                    // If still no name, try to extract from filename
+                    if (!candidateName) {
+                      const filenameBasedName = extractNameFromFilename(file.name)
+                      if (filenameBasedName) {
+                        candidateName = filenameBasedName
+                        newDetectedNames[candidateId] = true
+                      }
+                    }
+                  }
+
+                  // If still no name, use a generic one
+                  if (!candidateName) {
+                    candidateName = `Candidate ${candidates.length + newCandidates.length + 1}`
+                  }
+
+                  newCandidates.push({
+                    id: candidateId,
+                    name: candidateName,
+                    resume: extractedText,
+                  })
+
+                  newFileStatuses[candidateId] = "success"
+                } else {
+                  newFileStatuses[candidateId] = "error"
+                }
+              } catch (error) {
+                console.error("Error processing file:", error)
+              }
+            }),
+          )
+
+          // Small delay between batches to let the browser breathe
+          await new Promise((resolve) => setTimeout(resolve, 50))
+        }
+
+        // Update state with all the new candidates at once
+        setCandidates((prev) => [...prev, ...newCandidates])
+        setCandidateFiles((prev) => ({ ...prev, ...newCandidateFiles }))
+        setFileProcessingStatus((prev) => ({ ...prev, ...newFileStatuses }))
+        setDetectedNames((prev) => ({ ...prev, ...newDetectedNames }))
+      } catch (error) {
+        console.error("Error handling multiple files:", error)
+        setError(`Error processing files: ${error instanceof Error ? error.message : String(error)}`)
+      } finally {
+        setIsBulkProcessing(false)
+      }
+    },
+    [candidates.length, parseDocument],
+  )
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setError(null) // Clear previous errors
@@ -275,6 +373,12 @@ export function ResumeRanker() {
     // Validate inputs
     if (!jobDescription.trim() && !jobDescriptionFile) {
       alert("Please enter a job description or upload a file")
+      return
+    }
+
+    // Check if there are any candidates
+    if (candidates.length === 0) {
+      alert("Please add at least one candidate")
       return
     }
 
@@ -297,13 +401,22 @@ export function ResumeRanker() {
       const originalCandidatesLength = validCandidates.reduce((total, c) => total + c.resume.length, 0)
       const originalTotalLength = originalJobDescLength + originalCandidatesLength
 
-      const result = await rankCandidates({
+      // Add a timeout to prevent infinite loading if the API doesn't respond
+      const rankingPromise = rankCandidates({
         jobDescription,
         candidates: validCandidates,
         jobDescriptionFile,
         candidateFiles,
         weightConfig,
       })
+
+      // Add a timeout of 120 seconds
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("Ranking request timed out after 120 seconds")), 120000),
+      )
+
+      // Race the ranking promise against the timeout
+      const result = (await Promise.race([rankingPromise, timeoutPromise])) as RankingResult
 
       // Validate the result
       if (!result || !result.rankedCandidates || !Array.isArray(result.rankedCandidates)) {
@@ -430,110 +543,123 @@ export function ResumeRanker() {
             <CardTitle>Candidates</CardTitle>
           </CardHeader>
           <CardContent className="space-y-6">
-            {candidates.map((candidate, index) => (
-              <div key={candidate.id} className="space-y-4">
-                {index > 0 && <Separator className="my-6" />}
+            <div className="mb-6">
+              <h3 className="text-sm font-medium mb-2">Bulk Upload Resumes</h3>
+              <MultiFileUpload onFilesSelected={handleMultipleFiles} isProcessing={isBulkProcessing} />
+              <p className="text-xs text-gray-500 mt-2">
+                Drag and drop multiple resume files to create candidates automatically
+              </p>
+            </div>
 
-                <div className="flex justify-between items-center">
-                  <h3 className="font-medium text-lg flex items-center">Candidate {index + 1}</h3>
-                  {candidates.length > 1 && (
+            {candidates.length === 0 ? (
+              <div className="text-center py-6 border-2 border-dashed rounded-md border-gray-200">
+                <p className="text-gray-500">No candidates added yet</p>
+                <p className="text-sm text-gray-400 mt-1">Use the bulk upload above or add candidates manually</p>
+              </div>
+            ) : (
+              candidates.map((candidate, index) => (
+                <div key={candidate.id} className="space-y-4">
+                  {index > 0 && <Separator className="my-6" />}
+
+                  <div className="flex justify-between items-center">
+                    <h3 className="font-medium text-lg flex items-center">Candidate {index + 1}</h3>
                     <Button type="button" variant="ghost" size="sm" onClick={() => removeCandidate(candidate.id)}>
                       Remove
                     </Button>
-                  )}
-                </div>
-
-                <div>
-                  <div className="flex items-center justify-between mb-1">
-                    <Label htmlFor={`name-${candidate.id}`}>Name</Label>
-                    {detectedNames[candidate.id] && (
-                      <span className="text-xs flex items-center text-green-600">
-                        <CheckCircle className="h-3 w-3 mr-1" />
-                        Auto-detected
-                      </span>
-                    )}
                   </div>
-                  <Input
-                    id={`name-${candidate.id}`}
-                    placeholder="Name will be auto-detected from resume"
-                    value={candidate.name}
-                    onChange={(e) => updateCandidate(candidate.id, "name", e.target.value)}
-                    className={detectedNames[candidate.id] ? "border-green-300 focus-visible:ring-green-300" : ""}
-                  />
-                </div>
 
-                <Tabs defaultValue="file" className="w-full">
-                  <TabsList className="mb-4">
-                    <TabsTrigger value="file">Upload Resume</TabsTrigger>
-                    <TabsTrigger value="text">Enter Resume Text</TabsTrigger>
-                  </TabsList>
-                  <TabsContent value="file">
-                    <FileUpload
-                      id={`resume-file-${candidate.id}`}
-                      label="Upload Resume (PDF, DOC, or DOCX)"
-                      onChange={(file) => updateCandidateFile(candidate.id, file)}
-                      currentFile={candidateFiles[candidate.id] || null}
-                    />
-
-                    {/* File Processing Status */}
-                    {fileProcessingStatus[candidate.id] === "processing" && (
-                      <div className="mt-2 flex items-center text-blue-600 text-sm">
-                        <Loader2 className="h-3 w-3 mr-1 animate-spin" />
-                        Processing file...
-                      </div>
-                    )}
-
-                    {fileProcessingStatus[candidate.id] === "success" && (
-                      <div className="mt-2 flex items-center text-green-600 text-sm">
-                        <CheckCircle className="h-3 w-3 mr-1" />
-                        File processed successfully
-                      </div>
-                    )}
-
-                    {fileProcessingStatus[candidate.id] === "error" && (
-                      <div className="mt-2 flex items-center text-red-600 text-sm">
-                        <AlertTriangle className="h-3 w-3 mr-1" />
-                        Error processing file
-                      </div>
-                    )}
-
-                    {/* Show extracted text preview if available */}
-                    {candidateFiles[candidate.id] && candidate.resume && (
-                      <div className="mt-4">
-                        <Label htmlFor={`preview-${candidate.id}`} className="text-sm text-gray-500">
-                          Extracted Text Preview
-                        </Label>
-                        <div
-                          id={`preview-${candidate.id}`}
-                          className="mt-1 p-2 border rounded-md bg-gray-50 text-sm max-h-[100px] overflow-y-auto"
-                        >
-                          {candidate.resume.length > 300
-                            ? `${candidate.resume.substring(0, 300)}...`
-                            : candidate.resume}
-                        </div>
-                      </div>
-                    )}
-                  </TabsContent>
-                  <TabsContent value="text">
-                    <div>
-                      <Label htmlFor={`resume-${candidate.id}`}>Resume</Label>
-                      <Textarea
-                        id={`resume-${candidate.id}`}
-                        placeholder="Paste the candidate's resume here..."
-                        className="min-h-[150px]"
-                        value={candidate.resume}
-                        onChange={(e) => updateCandidate(candidate.id, "resume", e.target.value)}
-                      />
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <Label htmlFor={`name-${candidate.id}`}>Name</Label>
+                      {detectedNames[candidate.id] && (
+                        <span className="text-xs flex items-center text-green-600">
+                          <CheckCircle className="h-3 w-3 mr-1" />
+                          Auto-detected
+                        </span>
+                      )}
                     </div>
-                  </TabsContent>
-                </Tabs>
-              </div>
-            ))}
+                    <Input
+                      id={`name-${candidate.id}`}
+                      placeholder="Name will be auto-detected from resume"
+                      value={candidate.name}
+                      onChange={(e) => updateCandidate(candidate.id, "name", e.target.value)}
+                      className={detectedNames[candidate.id] ? "border-green-300 focus-visible:ring-green-300" : ""}
+                    />
+                  </div>
 
-            {/* Add Candidate Button - Now at the bottom */}
+                  <Tabs defaultValue="file" className="w-full">
+                    <TabsList className="mb-4">
+                      <TabsTrigger value="file">Upload Resume</TabsTrigger>
+                      <TabsTrigger value="text">Enter Resume Text</TabsTrigger>
+                    </TabsList>
+                    <TabsContent value="file">
+                      <FileUpload
+                        id={`resume-file-${candidate.id}`}
+                        label="Upload Resume (PDF, DOC, or DOCX)"
+                        onChange={(file) => updateCandidateFile(candidate.id, file)}
+                        currentFile={candidateFiles[candidate.id] || null}
+                      />
+
+                      {/* File Processing Status */}
+                      {fileProcessingStatus[candidate.id] === "processing" && (
+                        <div className="mt-2 flex items-center text-blue-600 text-sm">
+                          <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                          Processing file...
+                        </div>
+                      )}
+
+                      {fileProcessingStatus[candidate.id] === "success" && (
+                        <div className="mt-2 flex items-center text-green-600 text-sm">
+                          <CheckCircle className="h-3 w-3 mr-1" />
+                          File processed successfully
+                        </div>
+                      )}
+
+                      {fileProcessingStatus[candidate.id] === "error" && (
+                        <div className="mt-2 flex items-center text-red-600 text-sm">
+                          <AlertTriangle className="h-3 w-3 mr-1" />
+                          Error processing file
+                        </div>
+                      )}
+
+                      {/* Show extracted text preview if available */}
+                      {candidateFiles[candidate.id] && candidate.resume && (
+                        <div className="mt-4">
+                          <Label htmlFor={`preview-${candidate.id}`} className="text-sm text-gray-500">
+                            Extracted Text Preview
+                          </Label>
+                          <div
+                            id={`preview-${candidate.id}`}
+                            className="mt-1 p-2 border rounded-md bg-gray-50 text-sm max-h-[100px] overflow-y-auto"
+                          >
+                            {candidate.resume.length > 300
+                              ? `${candidate.resume.substring(0, 300)}...`
+                              : candidate.resume}
+                          </div>
+                        </div>
+                      )}
+                    </TabsContent>
+                    <TabsContent value="text">
+                      <div>
+                        <Label htmlFor={`resume-${candidate.id}`}>Resume</Label>
+                        <Textarea
+                          id={`resume-${candidate.id}`}
+                          placeholder="Paste the candidate's resume here..."
+                          className="min-h-[150px]"
+                          value={candidate.resume}
+                          onChange={(e) => updateCandidate(candidate.id, "resume", e.target.value)}
+                        />
+                      </div>
+                    </TabsContent>
+                  </Tabs>
+                </div>
+              ))
+            )}
+
+            {/* Add Candidate Button - Always visible */}
             <Button type="button" onClick={addCandidate} variant="outline" className="w-full mt-4">
               <UserPlus className="mr-2 h-4 w-4" />
-              Add Another Candidate
+              {candidates.length === 0 ? "Add a Candidate" : "Add Another Candidate"}
             </Button>
           </CardContent>
         </Card>

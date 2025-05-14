@@ -44,9 +44,20 @@ export async function rankCandidates({
   weightConfig,
 }: RankCandidatesProps): Promise<RankingResult> {
   try {
+    // Limit the number of candidates to prevent API overload
+    const MAX_CANDIDATES = 20
+    let processedCandidates = [...candidates]
+
+    // If we have too many candidates, cap them and note this in the results
+    let candidatesLimited = false
+    if (processedCandidates.length > MAX_CANDIDATES) {
+      processedCandidates = processedCandidates.slice(0, MAX_CANDIDATES)
+      candidatesLimited = true
+    }
+
     // Track original text lengths for stats
     const originalJobDescLength = jobDescription.length
-    const originalCandidatesLength = candidates.reduce((total, c) => total + (c.resume?.length || 0), 0)
+    const originalCandidatesLength = processedCandidates.reduce((total, c) => total + (c.resume?.length || 0), 0)
     const originalTotalLength = originalJobDescLength + originalCandidatesLength
 
     // Process job description file if provided
@@ -69,7 +80,6 @@ export async function rankCandidates({
     finalJobDescription = processedJobDescription
 
     // Process candidate resume files if provided
-    const processedCandidates = [...candidates]
 
     if (candidateFiles) {
       for (const [id, file] of Object.entries(candidateFiles)) {
@@ -182,6 +192,23 @@ Respond ONLY with valid JSON in the exact format specified in the prompt. Do not
 
         // Process the response
         const result = processAIResponse(response.text, validCandidates, finalJobDescription, weightConfig)
+
+        // Add a warning if candidates were limited
+        if (candidatesLimited) {
+          const warningMessage = {
+            name: "Note: Analysis Limited",
+            score: 0,
+            strengths: [""],
+            weaknesses: [`Only the first ${MAX_CANDIDATES} candidates were analyzed due to system limitations.`],
+            analysis: `For better performance, only the first ${MAX_CANDIDATES} candidates were analyzed. Please rank candidates in smaller batches for complete results.`,
+          }
+
+          // Add the warning as a special item in the results
+          if (Array.isArray(result.rankedCandidates)) {
+            result.rankedCandidates.push(warningMessage)
+          }
+        }
+
         return {
           ...result,
           preprocessStats,
@@ -204,6 +231,23 @@ Respond ONLY with valid JSON in the exact format specified in the prompt. Do not
 
         // Process the response
         const result = processAIResponse(response.text, validCandidates, finalJobDescription, weightConfig)
+
+        // Add a warning if candidates were limited
+        if (candidatesLimited) {
+          const warningMessage = {
+            name: "Note: Analysis Limited",
+            score: 0,
+            strengths: [""],
+            weaknesses: [`Only the first ${MAX_CANDIDATES} candidates were analyzed due to system limitations.`],
+            analysis: `For better performance, only the first ${MAX_CANDIDATES} candidates were analyzed. Please rank candidates in smaller batches for complete results.`,
+          }
+
+          // Add the warning as a special item in the results
+          if (Array.isArray(result.rankedCandidates)) {
+            result.rankedCandidates.push(warningMessage)
+          }
+        }
+
         return {
           ...result,
           preprocessStats,
@@ -281,11 +325,21 @@ If technical skills are critical, they should receive a higher weight.
     `
   }
 
+  // Add a time constraint warning if we have many candidates
+  const timeConstraintWarning =
+    candidates.length > 5
+      ? `
+IMPORTANT: You have a limited time to analyze these ${candidates.length} candidates. Focus on the most important aspects of each resume to finish within the time limit.
+  `
+      : ""
+
   return `
 Job Description:
 ${jobDescription}
 
 ${weightInstructions}
+
+${timeConstraintWarning}
 
 Candidates:
 ${candidates

@@ -3,8 +3,17 @@
  */
 import mammoth from "mammoth"
 
+// Add a file size limit to prevent memory issues
+const MAX_FILE_SIZE_MB = 10 // 10MB limit
+
 export async function parseDocument(file: File): Promise<string> {
   try {
+    // Check file size
+    const fileSizeMB = file.size / (1024 * 1024)
+    if (fileSizeMB > MAX_FILE_SIZE_MB) {
+      throw new Error(`File size exceeds the ${MAX_FILE_SIZE_MB}MB limit. Please upload a smaller file.`)
+    }
+
     const fileName = file.name.toLowerCase()
     const fileType = file.type
 
@@ -25,7 +34,20 @@ export async function parseDocument(file: File): Promise<string> {
     }
   } catch (error) {
     console.error("Error parsing document:", error)
-    throw new Error(`Failed to parse document: ${error instanceof Error ? error.message : String(error)}`)
+    let errorMessage = "Failed to parse document"
+
+    // Add more specific error messages
+    if (error instanceof Error) {
+      if (error.message.includes("size exceeds")) {
+        errorMessage = error.message
+      } else if (error.message.includes("memory")) {
+        errorMessage = "Document processing failed due to memory limitations. Try a smaller file."
+      } else {
+        errorMessage = `Failed to parse document: ${error.message}`
+      }
+    }
+
+    throw new Error(errorMessage)
   }
 }
 
