@@ -31,6 +31,13 @@ function extractJsonFromResponse(text: string): string {
     return match[1].trim()
   }
 
+  // Try to find JSON object directly
+  const jsonObjectRegex = /(\{[\s\S]*\})/
+  const objectMatch = text.match(jsonObjectRegex)
+  if (objectMatch && objectMatch[1]) {
+    return objectMatch[1].trim()
+  }
+
   // Otherwise return the original text
   return text.trim()
 }
@@ -292,7 +299,27 @@ function processAIResponse(
     console.log("Cleaned response text:", cleanedText.substring(0, 200) + "...")
 
     try {
-      const result = JSON.parse(cleanedText) as RankingResult
+      // More robust JSON parsing with error handling
+      let result: RankingResult
+      try {
+        result = JSON.parse(cleanedText) as RankingResult
+      } catch (jsonError) {
+        console.error("JSON parse error:", jsonError)
+
+        // Try to fix common JSON issues
+        const fixedText = cleanedText
+          .replace(/\n/g, " ")
+          .replace(/,\s*}/g, "}")
+          .replace(/,\s*]/g, "]")
+          .replace(/(['"])?([a-zA-Z0-9_]+)(['"])?:/g, '"$2":')
+
+        try {
+          result = JSON.parse(fixedText) as RankingResult
+        } catch (secondError) {
+          console.error("Second JSON parse error:", secondError)
+          throw jsonError // Throw the original error if the fix didn't work
+        }
+      }
 
       // Validate the result structure
       if (!result.rankedCandidates || !Array.isArray(result.rankedCandidates) || result.rankedCandidates.length === 0) {

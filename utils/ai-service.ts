@@ -19,9 +19,7 @@ interface GenerateTextResult {
   usedFallback?: boolean
 }
 
-/**
- * Generate text using the OpenAI API directly
- */
+// Update the generateText function to handle production environment issues better
 export async function generateText(options: GenerateTextOptions): Promise<GenerateTextResult> {
   try {
     // Extract model name from the model parameter
@@ -38,48 +36,59 @@ export async function generateText(options: GenerateTextOptions): Promise<Genera
 
     console.log(`Attempting to use model: ${modelName}`)
 
-    // Make a direct request to OpenAI API
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: modelName,
-        messages: [
-          ...(options.system ? [{ role: "system", content: options.system }] : []),
-          { role: "user", content: options.prompt },
-        ],
-        temperature: options.temperature || 0.7,
-        max_tokens: options.maxTokens || 2000,
-      }),
-    })
+    // Make a direct request to OpenAI API with increased timeout
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), 60000) // 60 second timeout
 
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({ error: { message: "Failed to parse error response" } }))
-      console.error("OpenAI API error:", errorData)
+    try {
+      const response = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${OPENAI_API_KEY}`,
+        },
+        body: JSON.stringify({
+          model: modelName,
+          messages: [
+            ...(options.system ? [{ role: "system", content: options.system }] : []),
+            { role: "user", content: options.prompt },
+          ],
+          temperature: options.temperature || 0.7,
+          max_tokens: options.maxTokens || 2000,
+        }),
+        signal: controller.signal,
+      })
 
-      // If we're using the preferred model and get an error, try the fallback model
-      if (modelName === MODEL) {
-        console.log(`Falling back to ${FALLBACK_MODEL} due to API error`)
-        return generateTextWithFallbackModel(options)
+      clearTimeout(timeoutId)
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: { message: "Failed to parse error response" } }))
+        console.error("OpenAI API error:", errorData)
+
+        // If we're using the preferred model and get an error, try the fallback model
+        if (modelName === MODEL) {
+          console.log(`Falling back to ${FALLBACK_MODEL} due to API error`)
+          return generateTextWithFallbackModel(options)
+        }
+
+        throw new Error(`OpenAI API error: ${errorData.error?.message || "Unknown error"}`)
       }
 
-      throw new Error(`OpenAI API error: ${errorData.error?.message || "Unknown error"}`)
-    }
+      const data = await response.json().catch(() => {
+        throw new Error("Failed to parse JSON response from OpenAI API")
+      })
 
-    const data = await response.json().catch(() => {
-      throw new Error("Failed to parse JSON response from OpenAI API")
-    })
+      if (!data || !data.choices || !data.choices[0] || !data.choices[0].message) {
+        throw new Error("Invalid response format from OpenAI API")
+      }
 
-    if (!data || !data.choices || !data.choices[0] || !data.choices[0].message) {
-      throw new Error("Invalid response format from OpenAI API")
-    }
-
-    return {
-      text: data.choices[0]?.message?.content || "",
-      usedFallback: modelName !== MODEL,
+      return {
+        text: data.choices[0]?.message?.content || "",
+        usedFallback: modelName !== MODEL,
+      }
+    } catch (fetchError) {
+      clearTimeout(timeoutId)
+      throw fetchError
     }
   } catch (error) {
     console.error("Error in generateText:", error)
@@ -98,50 +107,54 @@ export async function generateText(options: GenerateTextOptions): Promise<Genera
   }
 }
 
-/**
- * Try generating text with the fallback model
- */
+// Also update the fallback model function with similar improvements
 async function generateTextWithFallbackModel(options: GenerateTextOptions): Promise<GenerateTextResult> {
   try {
-    const fallbackOptions = {
-      ...options,
-      model: FALLBACK_MODEL,
-    }
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), 60000) // 60 second timeout
 
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: FALLBACK_MODEL,
-        messages: [
-          ...(options.system ? [{ role: "system", content: options.system }] : []),
-          { role: "user", content: options.prompt },
-        ],
-        temperature: options.temperature || 0.7,
-        max_tokens: options.maxTokens || 2000,
-      }),
-    })
+    try {
+      const response = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${OPENAI_API_KEY}`,
+        },
+        body: JSON.stringify({
+          model: FALLBACK_MODEL,
+          messages: [
+            ...(options.system ? [{ role: "system", content: options.system }] : []),
+            { role: "user", content: options.prompt },
+          ],
+          temperature: options.temperature || 0.7,
+          max_tokens: options.maxTokens || 2000,
+        }),
+        signal: controller.signal,
+      })
 
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({ error: { message: "Failed to parse error response" } }))
-      console.error("Fallback model API error:", errorData)
-      throw new Error(`Fallback model API error: ${errorData.error?.message || "Unknown error"}`)
-    }
+      clearTimeout(timeoutId)
 
-    const data = await response.json().catch(() => {
-      throw new Error("Failed to parse JSON response from fallback model")
-    })
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: { message: "Failed to parse error response" } }))
+        console.error("Fallback model API error:", errorData)
+        throw new Error(`Fallback model API error: ${errorData.error?.message || "Unknown error"}`)
+      }
 
-    if (!data || !data.choices || !data.choices[0] || !data.choices[0].message) {
-      throw new Error("Invalid response format from fallback model")
-    }
+      const data = await response.json().catch(() => {
+        throw new Error("Failed to parse JSON response from fallback model")
+      })
 
-    return {
-      text: data.choices[0]?.message?.content || "",
-      usedFallback: true,
+      if (!data || !data.choices || !data.choices[0] || !data.choices[0].message) {
+        throw new Error("Invalid response format from fallback model")
+      }
+
+      return {
+        text: data.choices[0]?.message?.content || "",
+        usedFallback: true,
+      }
+    } catch (fetchError) {
+      clearTimeout(timeoutId)
+      throw fetchError
     }
   } catch (error) {
     console.error("Error in fallback model:", error)

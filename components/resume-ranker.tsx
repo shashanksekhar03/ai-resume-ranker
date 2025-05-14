@@ -361,6 +361,7 @@ export function ResumeRanker() {
     [candidates.length, parseDocument],
   )
 
+  // Update the handleSubmit function to better handle errors in production
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setError(null) // Clear previous errors
@@ -412,10 +413,21 @@ export function ResumeRanker() {
       )
 
       // Race the ranking promise against the timeout
-      const result = (await Promise.race([rankingPromise, timeoutPromise])) as RankingResult
+      let result
+      try {
+        result = (await Promise.race([rankingPromise, timeoutPromise])) as RankingResult
+      } catch (raceError) {
+        console.error("Error in ranking race:", raceError)
+        throw raceError
+      }
 
       // Validate the result
-      if (!result || !result.rankedCandidates || !Array.isArray(result.rankedCandidates)) {
+      if (!result) {
+        throw new Error("No result returned from ranking service")
+      }
+
+      if (!result.rankedCandidates || !Array.isArray(result.rankedCandidates)) {
+        console.error("Invalid result structure:", result)
         throw new Error("Invalid response format from ranking service")
       }
 
