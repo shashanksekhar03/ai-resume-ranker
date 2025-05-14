@@ -25,7 +25,6 @@ import {
 } from "@/utils/name-detector"
 import { parseDocument } from "@/utils/document-parser"
 import { MultiFileUpload } from "@/components/multi-file-upload"
-// First, add the import for the ProcessingStatus component
 import { ProcessingStatus } from "@/components/processing-status"
 
 export function ResumeRanker() {
@@ -39,6 +38,7 @@ export function ResumeRanker() {
   const [detectedNames, setDetectedNames] = useState<Record<string, boolean>>({})
   const [fileProcessingStatus, setFileProcessingStatus] = useState<Record<string, string>>({})
   const [isBulkProcessing, setIsBulkProcessing] = useState(false)
+  const [processingMessage, setProcessingMessage] = useState<string>("")
 
   // Weight configuration state
   const [weightConfig, setWeightConfig] = useState<WeightConfig>({
@@ -281,7 +281,7 @@ export function ResumeRanker() {
         const newDetectedNames: Record<string, boolean> = {}
 
         // Process files in smaller batches to avoid memory issues
-        const batchSize = 3
+        const batchSize = 2 // Reduced batch size for better reliability
         const totalBatches = Math.ceil(files.length / batchSize)
 
         for (let batchIndex = 0; batchIndex < totalBatches; batchIndex++) {
@@ -289,7 +289,7 @@ export function ResumeRanker() {
           const batch = files.slice(batchStart, batchStart + batchSize)
 
           // Show progress
-          setError(
+          setProcessingMessage(
             `Processing batch ${batchIndex + 1}/${totalBatches} (${batchStart + 1}-${Math.min(batchStart + batchSize, files.length)} of ${files.length} files)...`,
           )
 
@@ -372,7 +372,7 @@ export function ResumeRanker() {
         }
 
         // Clear the processing message
-        setError(null)
+        setProcessingMessage("")
       } catch (error) {
         console.error("Error handling multiple files:", error)
         setError(`Error processing files: ${error instanceof Error ? error.message : String(error)}`)
@@ -386,6 +386,7 @@ export function ResumeRanker() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setError(null) // Clear previous errors
+    setProcessingMessage("") // Clear processing message
     setPreprocessStats(null) // Clear previous stats
 
     // Validate inputs
@@ -411,7 +412,7 @@ export function ResumeRanker() {
     }
 
     // Warn if there are many candidates
-    if (validCandidates.length > 20) {
+    if (validCandidates.length > 10) {
       const proceed = window.confirm(
         `You are about to rank ${validCandidates.length} candidates, which may take some time and could cause performance issues. Would you like to proceed?`,
       )
@@ -426,31 +427,31 @@ export function ResumeRanker() {
       const originalCandidatesLength = validCandidates.reduce((total, c) => total + c.resume.length, 0)
       const originalTotalLength = originalJobDescLength + originalCandidatesLength
 
-      // Process candidates in batches if there are many
-      if (validCandidates.length > 10) {
-        // Process in batches of 10
-        const batchSize = 10
-        const batches = Math.ceil(validCandidates.length / batchSize)
+      // Process candidates in batches regardless of count
+      // This is a key change to ensure reliability with many candidates
+      const batchSize = 3 // Reduced batch size for better reliability
+      const batches = Math.ceil(validCandidates.length / batchSize)
 
-        let allRankedCandidates: any[] = []
+      let allRankedCandidates: any[] = []
 
-        for (let i = 0; i < batches; i++) {
-          const batchStart = i * batchSize
-          const batchEnd = Math.min((i + 1) * batchSize, validCandidates.length)
-          const batchCandidates = validCandidates.slice(batchStart, batchEnd)
+      for (let i = 0; i < batches; i++) {
+        const batchStart = i * batchSize
+        const batchEnd = Math.min((i + 1) * batchSize, validCandidates.length)
+        const batchCandidates = validCandidates.slice(batchStart, batchEnd)
 
-          setError(
-            `Processing batch ${i + 1}/${batches} (candidates ${batchStart + 1}-${batchEnd} of ${validCandidates.length})...`,
-          )
+        setProcessingMessage(
+          `Processing batch ${i + 1}/${batches} (candidates ${batchStart + 1}-${batchEnd} of ${validCandidates.length})...`,
+        )
 
-          // Get candidate files for this batch
-          const batchCandidateFiles: Record<string, File | null> = {}
-          batchCandidates.forEach((c) => {
-            if (candidateFiles[c.id]) {
-              batchCandidateFiles[c.id] = candidateFiles[c.id]
-            }
-          })
+        // Get candidate files for this batch
+        const batchCandidateFiles: Record<string, File | null> = {}
+        batchCandidates.forEach((c) => {
+          if (candidateFiles[c.id]) {
+            batchCandidateFiles[c.id] = candidateFiles[c.id]
+          }
+        })
 
+        try {
           // Rank this batch
           const batchResult = await rankCandidates({
             jobDescription,
@@ -469,52 +470,40 @@ export function ResumeRanker() {
               setPreprocessStats(batchResult.preprocessStats)
             }
           }
-        }
+        } catch (batchError) {
+          console.error(`Error processing batch ${i + 1}:`, batchError)
 
-        // Sort all candidates by score
-        allRankedCandidates.sort((a, b) => b.score - a.score)
-
-        // Create final result
-        const result: RankingResult = {
-          rankedCandidates: allRankedCandidates,
-          preprocessStats: preprocessStats || {
-            original: originalTotalLength,
-            processed: Math.floor(originalTotalLength * 0.7),
-            percentReduction: 30,
-          },
-        }
-
-        setResults(result)
-        setError(null) // Clear processing message
-      } else {
-        // For smaller sets, process all at once
-        const result = await rankCandidates({
-          jobDescription,
-          candidates: validCandidates,
-          jobDescriptionFile,
-          candidateFiles,
-          weightConfig,
-        })
-
-        // Validate the result
-        if (!result || !result.rankedCandidates || !Array.isArray(result.rankedCandidates)) {
-          throw new Error("Invalid response format from ranking service")
-        }
-
-        // If the result includes preprocessed stats, show them
-        if (result.preprocessStats) {
-          setPreprocessStats(result.preprocessStats)
-        } else {
-          // Estimate preprocessing stats based on typical reduction
-          setPreprocessStats({
-            original: originalTotalLength,
-            processed: Math.floor(originalTotalLength * 0.7), // Assume 30% reduction
-            percentReduction: 30,
+          // Add an error entry for this batch
+          allRankedCandidates.push({
+            name: `Batch ${i + 1} Error`,
+            score: 0,
+            strengths: [],
+            weaknesses: [`Error: ${batchError instanceof Error ? batchError.message : String(batchError)}`],
+            analysis: `An error occurred while processing batch ${i + 1}. Some candidates may not have been properly analyzed.`,
           })
         }
 
-        setResults(result)
+        // Add a delay between batches to avoid rate limiting
+        if (i < batches - 1) {
+          await new Promise((resolve) => setTimeout(resolve, 1000))
+        }
       }
+
+      // Sort all candidates by score
+      allRankedCandidates.sort((a, b) => b.score - a.score)
+
+      // Create final result
+      const result: RankingResult = {
+        rankedCandidates: allRankedCandidates,
+        preprocessStats: preprocessStats || {
+          original: originalTotalLength,
+          processed: Math.floor(originalTotalLength * 0.7),
+          percentReduction: 30,
+        },
+      }
+
+      setResults(result)
+      setProcessingMessage("") // Clear processing message
     } catch (error) {
       console.error("Error ranking candidates:", error)
       const errorMessage = error instanceof Error ? error.message : String(error)
@@ -549,7 +538,7 @@ export function ResumeRanker() {
       {/* Model Status Check */}
       <ModelStatus />
 
-      {error && !error.startsWith("Processing") && (
+      {error && !error.includes("Processing") && (
         <div className="bg-red-50 border-l-4 border-red-400 p-4 mb-6">
           <div className="flex">
             <div className="flex-shrink-0">
@@ -570,8 +559,8 @@ export function ResumeRanker() {
       )}
 
       {/* Show processing status for batch operations */}
-      {error && error.startsWith("Processing") && (
-        <ProcessingStatus message={error} isProcessing={isLoading || isBulkProcessing} />
+      {(processingMessage || (error && error.includes("Processing"))) && (
+        <ProcessingStatus message={processingMessage || error || ""} isProcessing={isLoading || isBulkProcessing} />
       )}
 
       {preprocessStats && !isLoading && <PreprocessingStats stats={preprocessStats} />}

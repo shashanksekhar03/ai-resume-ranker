@@ -4,14 +4,17 @@
  */
 
 // Maximum recommended length for a resume to send to the API
-const MAX_RESUME_LENGTH = 6000 // Increased from 4000
+const MAX_RESUME_LENGTH = 4000 // Reduced from 6000 for production
 // Maximum recommended length for a job description to send to the API
-const MAX_JOB_DESCRIPTION_LENGTH = 3000 // Increased from 2000
+const MAX_JOB_DESCRIPTION_LENGTH = 2000 // Reduced from 3000 for production
 
 /**
  * Preprocess text to remove redundancy and optimize for API usage
+ * @param text The text to preprocess
+ * @param type The type of text (resume or job description)
+ * @param aggressive Whether to use more aggressive preprocessing (for production)
  */
-export function preprocessText(text: string, type: "resume" | "jobDescription"): string {
+export function preprocessText(text: string, type: "resume" | "jobDescription", aggressive = false): string {
   if (!text || typeof text !== "string") {
     return ""
   }
@@ -28,8 +31,17 @@ export function preprocessText(text: string, type: "resume" | "jobDescription"):
   // Extract and prioritize key information based on content type
   processed = extractKeyInformation(processed, type)
 
+  // Apply more aggressive truncation in production mode
+  const maxLength =
+    type === "resume"
+      ? aggressive
+        ? MAX_RESUME_LENGTH / 2
+        : MAX_RESUME_LENGTH
+      : aggressive
+        ? MAX_JOB_DESCRIPTION_LENGTH / 2
+        : MAX_JOB_DESCRIPTION_LENGTH
+
   // Truncate if still too long
-  const maxLength = type === "resume" ? MAX_RESUME_LENGTH : MAX_JOB_DESCRIPTION_LENGTH
   if (processed.length > maxLength) {
     processed = smartTruncate(processed, maxLength, type)
   }

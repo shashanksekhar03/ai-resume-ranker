@@ -44,8 +44,9 @@ export async function rankCandidates({
   weightConfig,
 }: RankCandidatesProps): Promise<RankingResult> {
   try {
-    // Limit the number of candidates per batch to prevent API overload
-    const MAX_CANDIDATES_PER_BATCH = 10
+    // Reduce batch size for production to avoid memory issues
+    // This is a critical change to handle more candidates reliably
+    const MAX_CANDIDATES_PER_BATCH = 3
     const processedCandidates = [...candidates]
 
     // If we have too many candidates, note this in the results
@@ -77,7 +78,8 @@ export async function rankCandidates({
     }
 
     // Preprocess the job description to optimize for API usage
-    const processedJobDescription = preprocessText(finalJobDescription, "jobDescription")
+    // More aggressive preprocessing for production
+    const processedJobDescription = preprocessText(finalJobDescription, "jobDescription", true)
     finalJobDescription = processedJobDescription
 
     // Process candidate resume files if provided
@@ -115,8 +117,8 @@ export async function rankCandidates({
         // Filter out contact information before preprocessing
         const filteredResume = filterContactInfo(processedCandidates[i].resume)
 
-        // Preprocess the resume text
-        processedCandidates[i].resume = preprocessText(filteredResume, "resume")
+        // Preprocess the resume text - more aggressive for production
+        processedCandidates[i].resume = preprocessText(filteredResume, "resume", true)
 
         // If candidate doesn't have a name, try to detect it from the original resume
         if (!processedCandidates[i].name.trim()) {
@@ -172,91 +174,107 @@ export async function rankCandidates({
       return generateMockRanking(processedCandidates, finalJobDescription, weightConfig, preprocessStats)
     }
 
-    // Create a prompt for the AI to analyze and rank the candidates
-    const prompt = createRankingPrompt(finalJobDescription, validCandidates, weightConfig)
+    // Process candidates in batches regardless of count to ensure consistency
+    // This is a key change to handle many candidates reliably
+    const batches = Math.ceil(validCandidates.length / MAX_CANDIDATES_PER_BATCH)
+    let allRankedCandidates: any[] = []
 
-    try {
-      // First try with the preferred model
+    for (let i = 0; i < batches; i++) {
+      const batchStart = i * MAX_CANDIDATES_PER_BATCH
+      const batchEnd = Math.min((i + 1) * MAX_CANDIDATES_PER_BATCH, validCandidates.length)
+      const batchCandidates = validCandidates.slice(batchStart, batchEnd)
+
+      console.log(
+        `Processing batch ${i + 1}/${batches} (candidates ${batchStart + 1}-${batchEnd} of ${validCandidates.length})...`,
+      )
+
       try {
-        const response = await generateText({
-          model: MODEL,
-          prompt,
-          system: `You are an expert HR professional and recruiter with deep experience in matching candidates to job requirements.
+        // Create a prompt for the AI to analyze and rank the candidates in this batch
+        const prompt = createRankingPrompt(finalJobDescription, batchCandidates, weightConfig)
+
+        // First try with the preferred model
+        try {
+          const response = await generateText({
+            model: MODEL,
+            prompt,
+            system: `You are an expert HR professional and recruiter with deep experience in matching candidates to job requirements.
 Your task is to analyze each candidate's resume against the job description and provide a detailed ranking.
 Respond ONLY with valid JSON in the exact format specified in the prompt. Do not include markdown formatting, code blocks, or any text outside the JSON object.`,
-          temperature: 0.2, // Lower temperature for more consistent results
-          maxTokens: 4000, // Ensure enough tokens for detailed analysis
-        })
+            temperature: 0.2, // Lower temperature for more consistent results
+            maxTokens: 2500, // Reduced token limit for better reliability
+          })
 
-        // Process the response
-        const result = processAIResponse(response.text, validCandidates, finalJobDescription, weightConfig)
+          // Process the response
+          const result = processAIResponse(response.text, batchCandidates, finalJobDescription, weightConfig)
 
-        // Add a warning if candidates were limited
-        if (candidatesLimited) {
-          const warningMessage = {
-            name: "Note: Analysis Limited",
-            score: 0,
-            strengths: [""],
-            weaknesses: [
-              `Only the first ${MAX_CANDIDATES_PER_BATCH} candidates were analyzed due to system limitations.`,
-            ],
-            analysis: `For better performance, only the first ${MAX_CANDIDATES_PER_BATCH} candidates were analyzed. Please rank candidates in smaller batches for complete results.`,
+          // Add to overall results
+          if (result && result.rankedCandidates) {
+            allRankedCandidates = [...allRankedCandidates, ...result.rankedCandidates]
           }
+        } catch (preferredModelError) {
+          console.error("Error with preferred model, trying fallback model:", preferredModelError)
 
-          // Add the warning as a special item in the results
-          if (Array.isArray(result.rankedCandidates)) {
-            result.rankedCandidates.push(warningMessage)
-          }
-        }
-
-        return {
-          ...result,
-          preprocessStats,
-        }
-      } catch (preferredModelError) {
-        console.error("Error with preferred model, trying fallback model:", preferredModelError)
-
-        // Try with the fallback model
-        const response = await generateText({
-          model: FALLBACK_MODEL,
-          prompt,
-          system: `You are an expert HR professional and recruiter with deep experience in matching candidates to job requirements.
+          // Try with the fallback model
+          const response = await generateText({
+            model: FALLBACK_MODEL,
+            prompt,
+            system: `You are an expert HR professional and recruiter with deep experience in matching candidates to job requirements.
 Your task is to analyze each candidate's resume against the job description and provide a detailed ranking.
 Respond ONLY with valid JSON in the exact format specified in the prompt. Do not include markdown formatting, code blocks, or any text outside the JSON object.`,
-          temperature: 0.2,
-          maxTokens: 4000,
-        })
+            temperature: 0.2,
+            maxTokens: 2500, // Reduced token limit for better reliability
+          })
 
-        // Process the response
-        const result = processAIResponse(response.text, validCandidates, finalJobDescription, weightConfig)
+          // Process the response
+          const result = processAIResponse(response.text, batchCandidates, finalJobDescription, weightConfig)
 
-        // Add a warning if candidates were limited
-        if (candidatesLimited) {
-          const warningMessage = {
-            name: "Note: Analysis Limited",
-            score: 0,
-            strengths: [""],
-            weaknesses: [
-              `Only the first ${MAX_CANDIDATES_PER_BATCH} candidates were analyzed due to system limitations.`,
-            ],
-            analysis: `For better performance, only the first ${MAX_CANDIDATES_PER_BATCH} candidates were analyzed. Please rank candidates in smaller batches for complete results.`,
-          }
-
-          // Add the warning as a special item in the results
-          if (Array.isArray(result.rankedCandidates)) {
-            result.rankedCandidates.push(warningMessage)
+          // Add to overall results
+          if (result && result.rankedCandidates) {
+            allRankedCandidates = [...allRankedCandidates, ...result.rankedCandidates]
           }
         }
+      } catch (batchError) {
+        console.error(`Error processing batch ${i + 1}:`, batchError)
 
-        return {
-          ...result,
-          preprocessStats,
+        // Generate fallback rankings for this batch
+        const fallbackResult = generateMockRanking(batchCandidates, finalJobDescription, weightConfig)
+
+        // Add fallback results to overall results
+        if (fallbackResult && fallbackResult.rankedCandidates) {
+          allRankedCandidates = [...allRankedCandidates, ...fallbackResult.rankedCandidates]
         }
       }
-    } catch (apiError) {
-      console.error("OpenAI API Error:", apiError)
-      return generateMockRanking(validCandidates, finalJobDescription, weightConfig, preprocessStats)
+
+      // Add a small delay between batches to avoid rate limiting
+      if (i < batches - 1) {
+        await new Promise((resolve) => setTimeout(resolve, 1000))
+      }
     }
+
+    // Sort all candidates by score
+    allRankedCandidates.sort((a, b) => b.score - a.score)
+
+    // Add a warning if candidates were limited
+    if (candidatesLimited) {
+      const warningMessage = {
+        name: "Note: Large Candidate Set",
+        score: 0,
+        strengths: [""],
+        weaknesses: [`${validCandidates.length} candidates were processed in batches for optimal performance.`],
+        analysis: `For better performance, candidates were analyzed in batches of ${MAX_CANDIDATES_PER_BATCH}. This ensures reliable processing of large candidate sets.`,
+      }
+
+      // Add the warning as a special item in the results
+      allRankedCandidates.push(warningMessage)
+    }
+
+    // Create final result
+    const result: RankingResult = {
+      rankedCandidates: allRankedCandidates,
+      preprocessStats,
+    }
+
+    return result
   } catch (error) {
     console.error("Error in rankCandidates:", error)
 
@@ -353,12 +371,13 @@ If technical skills are critical, they should receive a higher weight.
 
   // Add a time constraint warning if we have many candidates
   const timeConstraintWarning =
-    candidates.length > 5
+    candidates.length > 2
       ? `
 IMPORTANT: You have a limited time to analyze these ${candidates.length} candidates. Focus on the most important aspects of each resume to finish within the time limit.
   `
       : ""
 
+  // Simplified prompt for better reliability with many candidates
   return `
 Job Description:
 ${jobDescription}
@@ -384,18 +403,10 @@ Analyze each candidate's resume against the job description. Rank them based on 
 
 For each candidate, provide:
 1. A match score (0-100) based on how well their qualifications match the job requirements
-2. 3-5 SPECIFIC key strengths relevant to the job (mention actual skills, experiences, or qualifications from their resume)
-3. 1-3 SPECIFIC areas for improvement or missing skills (mention actual requirements from the job description that they lack)
-4. A brief analysis explaining the ranking (2-3 sentences) that references SPECIFIC aspects of their background
-5. Category scores showing how well they match in each category (technical skills, experience, education, etc.)
-
-IMPORTANT GUIDELINES:
-- Be SPECIFIC and DETAILED in your analysis - avoid generic statements
-- Reference ACTUAL skills, experiences, and qualifications from the resume
-- Compare against ACTUAL requirements from the job description
-- Do NOT use placeholder text or generic descriptions
-- Ensure strengths and weaknesses are SPECIFIC to each candidate
-- Use CONCRETE examples from their resume whenever possible
+2. 2-3 key strengths relevant to the job
+3. 1-2 areas for improvement or missing skills
+4. A brief analysis explaining the ranking (1-2 sentences)
+5. Category scores showing how well they match in each category
 
 IMPORTANT: Return your analysis as a JSON object with this exact structure, and ONLY the JSON object with no markdown formatting or code blocks:
 {
@@ -403,9 +414,9 @@ IMPORTANT: Return your analysis as a JSON object with this exact structure, and 
     {
       "name": "Candidate Name",
       "score": 85,
-      "strengths": ["Specific strength 1 with details", "Specific strength 2 with details", "Specific strength 3 with details"],
-      "weaknesses": ["Specific weakness 1 with details", "Specific weakness 2 with details"],
-      "analysis": "Specific analysis of why this candidate received this ranking, referencing actual qualifications and requirements.",
+      "strengths": ["Specific strength 1", "Specific strength 2"],
+      "weaknesses": ["Specific weakness 1"],
+      "analysis": "Brief analysis of why this candidate received this ranking.",
       "categoryScores": {
         "technical_skills": 80,
         "experience": 90,
