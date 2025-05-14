@@ -64,35 +64,31 @@ export function ResumeRanker() {
     }))
   }, [])
 
-  const removeCandidate = useCallback(
-    (id: string) => {
-      if (candidates.length > 1) {
-        setCandidates((prev) => prev.filter((candidate) => candidate.id !== id))
+  const removeCandidate = useCallback((id: string) => {
+    // Allow removing any candidate, even if it's the only one
+    setCandidates((prev) => prev.filter((candidate) => candidate.id !== id))
 
-        // Remove the file for this candidate
-        setCandidateFiles((prev) => {
-          const updated = { ...prev }
-          delete updated[id]
-          return updated
-        })
+    // Remove the file for this candidate
+    setCandidateFiles((prev) => {
+      const updated = { ...prev }
+      delete updated[id]
+      return updated
+    })
 
-        // Remove detected name status
-        setDetectedNames((prev) => {
-          const updated = { ...prev }
-          delete updated[id]
-          return updated
-        })
+    // Remove detected name status
+    setDetectedNames((prev) => {
+      const updated = { ...prev }
+      delete updated[id]
+      return updated
+    })
 
-        // Remove file processing status
-        setFileProcessingStatus((prev) => {
-          const updated = { ...prev }
-          delete updated[id]
-          return updated
-        })
-      }
-    },
-    [candidates.length],
-  )
+    // Remove file processing status
+    setFileProcessingStatus((prev) => {
+      const updated = { ...prev }
+      delete updated[id]
+      return updated
+    })
+  }, [])
 
   const updateCandidate = useCallback((id: string, field: "name" | "resume", value: string) => {
     setCandidates((prev) =>
@@ -267,7 +263,7 @@ export function ResumeRanker() {
 
   const handleMultipleFiles = useCallback(
     async (files: File[]) => {
-      if (files.length === 0) return
+      if (!files || files.length === 0) return
 
       setIsBulkProcessing(true)
 
@@ -377,7 +373,7 @@ export function ResumeRanker() {
     }
 
     // Check if there are any candidates
-    if (candidates.length === 0) {
+    if (!candidates || candidates.length === 0) {
       alert("Please add at least one candidate")
       return
     }
@@ -385,7 +381,7 @@ export function ResumeRanker() {
     const validCandidates = candidates.filter((c) => {
       // A candidate is valid if they have a resume (text OR file)
       // Name is no longer required as we'll auto-detect it
-      return c.resume.trim() || candidateFiles[c.id]
+      return c.resume?.trim() || candidateFiles[c.id]
     })
 
     if (validCandidates.length < 1) {
