@@ -40,9 +40,9 @@ export async function generateText(options: GenerateTextOptions): Promise<Genera
 
     console.log(`Attempting to use model: ${modelName}`)
 
-    // Make a direct request to OpenAI API
+    // Make a direct request to OpenAI API with increased timeout
     const controller = new AbortController()
-    const timeoutId = setTimeout(() => controller.abort(), 60000) // 60 second timeout
+    const timeoutId = setTimeout(() => controller.abort(), 120000) // 120 second timeout (2 minutes)
 
     try {
       // Ensure we're using the correct API key
@@ -55,21 +55,29 @@ export async function generateText(options: GenerateTextOptions): Promise<Genera
       // Use a try-catch block specifically for the fetch operation
       let response
       try {
+        // Prepare the request body
+        const requestBody = {
+          model: modelName,
+          messages: [
+            ...(options.system ? [{ role: "system", content: options.system }] : []),
+            { role: "user", content: options.prompt },
+          ],
+          temperature: options.temperature || 0.7,
+          max_tokens: options.maxTokens || 4000, // Increased from 2000 to 4000
+        }
+
+        // Log request size for debugging
+        const requestSize = JSON.stringify(requestBody).length
+        console.log(`Request size: ${requestSize} bytes`)
+
+        // Make the request
         response = await fetch("https://api.openai.com/v1/chat/completions", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
             Authorization: `Bearer ${apiKey}`,
           },
-          body: JSON.stringify({
-            model: modelName,
-            messages: [
-              ...(options.system ? [{ role: "system", content: options.system }] : []),
-              { role: "user", content: options.prompt },
-            ],
-            temperature: options.temperature || 0.7,
-            max_tokens: options.maxTokens || 2000,
-          }),
+          body: JSON.stringify(requestBody),
           signal: controller.signal,
         })
       } catch (fetchError) {
@@ -111,6 +119,23 @@ export async function generateText(options: GenerateTextOptions): Promise<Genera
         ) {
           console.log(`Model ${modelName} not available, falling back to ${FALLBACK_MODEL}`)
           return generateTextWithFallbackModel(options)
+        }
+
+        // Check for token limit errors
+        if (
+          errorMessage.includes("maximum context length") ||
+          errorMessage.includes("token limit") ||
+          errorMessage.includes("too long")
+        ) {
+          console.log("Token limit exceeded, trying with reduced content")
+
+          // Try with reduced max tokens
+          const reducedOptions = {
+            ...options,
+            maxTokens: Math.floor((options.maxTokens || 4000) * 0.75), // Reduce by 25%
+          }
+
+          return generateTextWithFallbackModel(reducedOptions)
         }
 
         // If we're using the preferred model and get an error, try the fallback model
@@ -214,7 +239,7 @@ export async function generateText(options: GenerateTextOptions): Promise<Genera
 async function generateTextWithFallbackModel(options: GenerateTextOptions): Promise<GenerateTextResult> {
   try {
     const controller = new AbortController()
-    const timeoutId = setTimeout(() => controller.abort(), 60000) // 60 second timeout
+    const timeoutId = setTimeout(() => controller.abort(), 120000) // 120 second timeout (2 minutes)
 
     try {
       // Ensure we're using the correct API key
@@ -227,21 +252,29 @@ async function generateTextWithFallbackModel(options: GenerateTextOptions): Prom
       // Use a try-catch block specifically for the fetch operation
       let response
       try {
+        // Prepare the request body
+        const requestBody = {
+          model: FALLBACK_MODEL,
+          messages: [
+            ...(options.system ? [{ role: "system", content: options.system }] : []),
+            { role: "user", content: options.prompt },
+          ],
+          temperature: options.temperature || 0.7,
+          max_tokens: options.maxTokens || 4000, // Increased from 2000 to 4000
+        }
+
+        // Log request size for debugging
+        const requestSize = JSON.stringify(requestBody).length
+        console.log(`Fallback request size: ${requestSize} bytes`)
+
+        // Make the request
         response = await fetch("https://api.openai.com/v1/chat/completions", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
             Authorization: `Bearer ${apiKey}`,
           },
-          body: JSON.stringify({
-            model: FALLBACK_MODEL,
-            messages: [
-              ...(options.system ? [{ role: "system", content: options.system }] : []),
-              { role: "user", content: options.prompt },
-            ],
-            temperature: options.temperature || 0.7,
-            max_tokens: options.maxTokens || 2000,
-          }),
+          body: JSON.stringify(requestBody),
           signal: controller.signal,
         })
       } catch (fetchError) {
@@ -271,6 +304,23 @@ async function generateTextWithFallbackModel(options: GenerateTextOptions): Prom
         }
 
         console.error("Fallback model API error:", errorData)
+
+        // Check for token limit errors
+        const errorMessage = errorData.error?.message || "Unknown error"
+        if (
+          errorMessage.includes("maximum context length") ||
+          errorMessage.includes("token limit") ||
+          errorMessage.includes("too long")
+        ) {
+          console.log("Token limit exceeded in fallback model, returning partial result")
+
+          // Return a valid JSON response for partial results
+          return {
+            text: `{"rankedCandidates":[{"name":"Partial Results","score":50,"strengths":["Analysis was limited due to content length"],"weaknesses":["Unable to analyze all candidates in detail"],"analysis":"The request was too large for complete analysis. Try reducing the number of candidates or the length of resumes."}]}`,
+            usedFallback: true,
+          }
+        }
+
         throw new Error(`Fallback model API error: ${errorData.error?.message || "Unknown error"}`)
       }
 

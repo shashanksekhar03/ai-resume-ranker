@@ -53,6 +53,134 @@ function extractJsonFromResponse(text: string): string {
   return text.trim()
 }
 
+// Process candidates in batches to avoid token limits
+async function processCandidatesInBatches(
+  jobDescription: string,
+  candidates: Candidate[],
+  weightConfig?: WeightConfig,
+): Promise<RankingResult> {
+  console.log(`Processing ${candidates.length} candidates in batches`)
+
+  // For small numbers of candidates, process them all at once
+  if (candidates.length <= 3) {
+    console.log("Small batch, processing all candidates together")
+    return await processRankingRequest(jobDescription, candidates, weightConfig)
+  }
+
+  // For larger numbers, process in batches
+  const BATCH_SIZE = 3
+  const batches: Candidate[][] = []
+
+  // Split candidates into batches
+  for (let i = 0; i < candidates.length; i += BATCH_SIZE) {
+    batches.push(candidates.slice(i, i + BATCH_SIZE))
+  }
+
+  console.log(`Split into ${batches.length} batches of up to ${BATCH_SIZE} candidates each`)
+
+  // Process each batch
+  const batchResults: RankingResult[] = []
+
+  for (let i = 0; i < batches.length; i++) {
+    console.log(`Processing batch ${i + 1} of ${batches.length}`)
+    try {
+      const batchResult = await processRankingRequest(jobDescription, batches[i], weightConfig)
+      batchResults.push(batchResult)
+    } catch (error) {
+      console.error(`Error processing batch ${i + 1}:`, error)
+      // If a batch fails, create a fallback result for that batch
+      batchResults.push(generateMockRanking(batches[i], jobDescription, weightConfig))
+    }
+  }
+
+  // Combine results from all batches
+  const combinedCandidates = batchResults.flatMap((result) => result.rankedCandidates || [])
+
+  // Sort all candidates by score
+  combinedCandidates.sort((a, b) => b.score - a.score)
+
+  // Use the preprocessStats from the first batch (they should be similar)
+  const preprocessStats = batchResults[0]?.preprocessStats
+
+  return {
+    rankedCandidates: combinedCandidates,
+    preprocessStats,
+  }
+}
+
+// Process a single ranking request
+async function processRankingRequest(
+  jobDescription: string,
+  candidates: Candidate[],
+  weightConfig?: WeightConfig,
+): Promise<RankingResult> {
+  // Create a prompt for the AI to analyze and rank the candidates
+  const prompt = createRankingPrompt(jobDescription, candidates, weightConfig)
+
+  try {
+    // First try with the preferred model
+    try {
+      console.log(`Attempting to use ${MODEL} for ranking ${candidates.length} candidates...`)
+
+      // Ensure we're using the correct API key
+      const apiKey = OPENAI_API_KEY || process.env.OPENAI_API_KEY
+
+      if (!apiKey) {
+        throw new Error("OpenAI API key is missing")
+      }
+
+      const response = await generateText({
+        model: openai(MODEL, {
+          temperature: 0.2, // Lower temperature for more consistent results
+          maxTokens: 4000, // Ensure enough tokens for detailed analysis
+          apiKey: apiKey,
+        }),
+        prompt,
+        system: `You are an expert HR professional and recruiter with deep experience in matching candidates to job requirements.
+Your task is to analyze each candidate's resume against the job description and provide a detailed ranking.
+Respond ONLY with valid JSON in the exact format specified in the prompt. Do not include markdown formatting, code blocks, or any text outside the JSON object.`,
+      })
+
+      if (!response || !response.text) {
+        throw new Error("Empty response from AI service")
+      }
+
+      // Check if we had to use the fallback model
+      if (response.usedFallback) {
+        console.log(`Used fallback model ${FALLBACK_MODEL} instead of ${MODEL}`)
+      }
+
+      // Process the response
+      return processAIResponse(response.text, candidates, jobDescription, weightConfig)
+    } catch (preferredModelError) {
+      console.error("Error with preferred model, trying fallback model:", preferredModelError)
+
+      // Try with the fallback model
+      const response = await generateText({
+        model: openai(FALLBACK_MODEL, {
+          temperature: 0.2,
+          maxTokens: 4000,
+          apiKey: OPENAI_API_KEY,
+        }),
+        prompt,
+        system: `You are an expert HR professional and recruiter with deep experience in matching candidates to job requirements.
+Your task is to analyze each candidate's resume against the job description and provide a detailed ranking.
+Respond ONLY with valid JSON in the exact format specified in the prompt. Do not include markdown formatting, code blocks, or any text outside the JSON object.`,
+      })
+
+      if (!response || !response.text) {
+        throw new Error("Empty response from fallback AI service")
+      }
+
+      // Process the response
+      return processAIResponse(response.text, candidates, jobDescription, weightConfig)
+    }
+  } catch (apiError) {
+    console.error("OpenAI API Error:", apiError)
+    return generateMockRanking(candidates, jobDescription, weightConfig)
+  }
+}
+
 // Update the rankCandidates function to use text preprocessing
 export async function rankCandidates({
   jobDescription,
@@ -192,113 +320,29 @@ export async function rankCandidates({
       return generateMockRanking(processedCandidates, finalJobDescription, weightConfig, preprocessStats)
     }
 
-    // Create a prompt for the AI to analyze and rank the candidates
-    const prompt = createRankingPrompt(finalJobDescription, validCandidates, weightConfig)
+    // Process candidates in batches to avoid token limits
+    const result = await processCandidatesInBatches(finalJobDescription, validCandidates, weightConfig)
 
-    try {
-      // First try with the preferred model
-      try {
-        console.log(`Attempting to use ${MODEL} for ranking...`)
+    // Add preprocessing stats
+    result.preprocessStats = preprocessStats
 
-        // Ensure we're using the correct API key
-        const apiKey = OPENAI_API_KEY || process.env.OPENAI_API_KEY
-
-        if (!apiKey) {
-          throw new Error("OpenAI API key is missing")
-        }
-
-        const response = await generateText({
-          model: openai(MODEL, {
-            temperature: 0.2, // Lower temperature for more consistent results
-            maxTokens: 4000, // Ensure enough tokens for detailed analysis
-            apiKey: apiKey,
-          }),
-          prompt,
-          system: `You are an expert HR professional and recruiter with deep experience in matching candidates to job requirements.
-Your task is to analyze each candidate's resume against the job description and provide a detailed ranking.
-Respond ONLY with valid JSON in the exact format specified in the prompt. Do not include markdown formatting, code blocks, or any text outside the JSON object.`,
-        })
-
-        if (!response || !response.text) {
-          throw new Error("Empty response from AI service")
-        }
-
-        // Check if we had to use the fallback model
-        if (response.usedFallback) {
-          console.log(`Used fallback model ${FALLBACK_MODEL} instead of ${MODEL}`)
-        }
-
-        // Process the response
-        const result = processAIResponse(response.text, validCandidates, finalJobDescription, weightConfig)
-
-        // Add a warning if candidates were limited
-        if (candidatesLimited) {
-          const warningMessage = {
-            name: "Note: Analysis Limited",
-            score: 0,
-            strengths: [""],
-            weaknesses: [`Only the first ${MAX_CANDIDATES} candidates were analyzed due to system limitations.`],
-            analysis: `For better performance, only the first ${MAX_CANDIDATES} candidates were analyzed. Please rank candidates in smaller batches for complete results.`,
-          }
-
-          // Add the warning as a special item in the results
-          if (Array.isArray(result.rankedCandidates)) {
-            result.rankedCandidates.push(warningMessage)
-          }
-        }
-
-        return {
-          ...result,
-          preprocessStats,
-        }
-      } catch (preferredModelError) {
-        console.error("Error with preferred model, trying fallback model:", preferredModelError)
-
-        // Try with the fallback model
-        const response = await generateText({
-          model: openai(FALLBACK_MODEL, {
-            temperature: 0.2,
-            maxTokens: 4000,
-            apiKey: OPENAI_API_KEY,
-          }),
-          prompt,
-          system: `You are an expert HR professional and recruiter with deep experience in matching candidates to job requirements.
-Your task is to analyze each candidate's resume against the job description and provide a detailed ranking.
-Respond ONLY with valid JSON in the exact format specified in the prompt. Do not include markdown formatting, code blocks, or any text outside the JSON object.`,
-        })
-
-        if (!response || !response.text) {
-          throw new Error("Empty response from fallback AI service")
-        }
-
-        // Process the response
-        const result = processAIResponse(response.text, validCandidates, finalJobDescription, weightConfig)
-
-        // Add a warning if candidates were limited
-        if (candidatesLimited) {
-          const warningMessage = {
-            name: "Note: Analysis Limited",
-            score: 0,
-            strengths: [""],
-            weaknesses: [`Only the first ${MAX_CANDIDATES} candidates were analyzed due to system limitations.`],
-            analysis: `For better performance, only the first ${MAX_CANDIDATES} candidates were analyzed. Please rank candidates in smaller batches for complete results.`,
-          }
-
-          // Add the warning as a special item in the results
-          if (Array.isArray(result.rankedCandidates)) {
-            result.rankedCandidates.push(warningMessage)
-          }
-        }
-
-        return {
-          ...result,
-          preprocessStats,
-        }
+    // Add a warning if candidates were limited
+    if (candidatesLimited) {
+      const warningMessage = {
+        name: "Note: Analysis Limited",
+        score: 0,
+        strengths: [""],
+        weaknesses: [`Only the first ${MAX_CANDIDATES} candidates were analyzed due to system limitations.`],
+        analysis: `For better performance, only the first ${MAX_CANDIDATES} candidates were analyzed. Please rank candidates in smaller batches for complete results.`,
       }
-    } catch (apiError) {
-      console.error("OpenAI API Error:", apiError)
-      return generateMockRanking(validCandidates, finalJobDescription, weightConfig, preprocessStats)
+
+      // Add the warning as a special item in the results
+      if (Array.isArray(result.rankedCandidates)) {
+        result.rankedCandidates.push(warningMessage)
+      }
     }
+
+    return result
   } catch (error) {
     console.error("Error in rankCandidates:", error)
     // Always return a valid result, even if there's an error
@@ -362,7 +406,7 @@ function processAIResponse(
 
             // Try one last approach - use regex to find the most JSON-like structure
             try {
-              const jsonLikeRegex = /\{(?:[^{}]|(\{(?:[^{}]|(\{(?:[^{}]|(\{[^{}]*\}))*\}))*\}))*\}/g
+              const jsonLikeRegex = /\{(?:[^{}]|(\\{(?:[^{}]|(\{(?:[^{}]|(\{[^{}]*\}))*\}))*\}))*\}/g
               const matches = cleanedText.match(jsonLikeRegex)
 
               if (matches && matches.length > 0) {
@@ -452,51 +496,35 @@ If technical skills are critical, they should receive a higher weight.
     `
   }
 
-  // Add a time constraint warning if we have many candidates
-  const timeConstraintWarning =
-    candidates.length > 5
-      ? `
-IMPORTANT: You have a limited time to analyze these ${candidates.length} candidates. Focus on the most important aspects of each resume to finish within the time limit.
-  `
-      : ""
+  // Optimize prompt for multiple candidates
+  const candidatePrompt = candidates
+    .map((c, index) => {
+      return `
+CANDIDATE ${index + 1}:
+Name: ${c.name || "Unnamed Candidate"}
+Resume:
+${c.resume || "No resume provided"}
+`
+    })
+    .join("\n---\n")
 
+  // Create a more concise prompt for multiple candidates
   return `
 Job Description:
 ${jobDescription}
 
 ${weightInstructions}
 
-${timeConstraintWarning}
+${candidatePrompt}
 
-Candidates:
-${candidates
-  .map(
-    (c) => `
-Name: ${c.name || "Unnamed Candidate"}
-Resume:
-${c.resume || "No resume provided"}
-`,
-  )
-  .join("\n---\n")}
-
-IMPORTANT: The job description and resumes have been preprocessed to include only the most relevant information.
-Personal contact information has been removed for privacy.
-Analyze each candidate's resume against the job description. Rank them based on how well they match the requirements.
+IMPORTANT: Analyze each candidate's resume against the job description. Rank them based on how well they match the requirements.
 
 For each candidate, provide:
 1. A match score (0-100) based on how well their qualifications match the job requirements
-2. 3-5 SPECIFIC key strengths relevant to the job (mention actual skills, experiences, or qualifications from their resume)
-3. 1-3 SPECIFIC areas for improvement or missing skills (mention actual requirements from the job description that they lack)
-4. A brief analysis explaining the ranking (2-3 sentences) that references SPECIFIC aspects of their background
-5. Category scores showing how well they match in each category (technical skills, experience, education, etc.)
-
-IMPORTANT GUIDELINES:
-- Be SPECIFIC and DETAILED in your analysis - avoid generic statements
-- Reference ACTUAL skills, experiences, and qualifications from the resume
-- Compare against ACTUAL requirements from the job description
-- Do NOT use placeholder text or generic descriptions
-- Ensure strengths and weaknesses are SPECIFIC to each candidate
-- Use CONCRETE examples from their resume whenever possible
+2. 3-5 key strengths relevant to the job
+3. 1-3 areas for improvement or missing skills
+4. A brief analysis explaining the ranking (2-3 sentences)
+5. Category scores showing how well they match in each category
 
 IMPORTANT: Return your analysis as a JSON object with this exact structure, and ONLY the JSON object with no markdown formatting or code blocks:
 {
@@ -504,9 +532,9 @@ IMPORTANT: Return your analysis as a JSON object with this exact structure, and 
     {
       "name": "Candidate Name",
       "score": 85,
-      "strengths": ["Specific strength 1 with details", "Specific strength 2 with details", "Specific strength 3 with details"],
-      "weaknesses": ["Specific weakness 1 with details", "Specific weakness 2 with details"],
-      "analysis": "Specific analysis of why this candidate received this ranking, referencing actual qualifications and requirements.",
+      "strengths": ["Specific strength 1", "Specific strength 2", "Specific strength 3"],
+      "weaknesses": ["Specific weakness 1", "Specific weakness 2"],
+      "analysis": "Specific analysis of why this candidate received this ranking.",
       "categoryScores": {
         "technical_skills": 80,
         "experience": 90,
