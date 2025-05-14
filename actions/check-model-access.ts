@@ -49,6 +49,14 @@ export async function checkModelAccess(): Promise<ModelAccessResult> {
               model: MODEL,
               details: `Successfully connected to ${MODEL}`,
             }
+          } else if (advancedResponse.usedFallback) {
+            // If we got a response but had to use the fallback model
+            return {
+              success: false,
+              model: FALLBACK_MODEL,
+              error: `Your API key works, but doesn't have access to ${MODEL}. Using ${FALLBACK_MODEL} instead.`,
+              details: `Response: "${advancedResponse.text}"`,
+            }
           } else {
             return {
               success: false,

@@ -187,11 +187,20 @@ export async function rankCandidates({
     try {
       // First try with the preferred model
       try {
+        console.log(`Attempting to use ${MODEL} for ranking...`)
+
+        // Ensure we're using the correct API key
+        const apiKey = OPENAI_API_KEY || process.env.OPENAI_API_KEY
+
+        if (!apiKey) {
+          throw new Error("OpenAI API key is missing")
+        }
+
         const response = await generateText({
           model: openai(MODEL, {
             temperature: 0.2, // Lower temperature for more consistent results
             maxTokens: 4000, // Ensure enough tokens for detailed analysis
-            apiKey: OPENAI_API_KEY,
+            apiKey: apiKey,
           }),
           prompt,
           system: `You are an expert HR professional and recruiter with deep experience in matching candidates to job requirements.
@@ -201,6 +210,11 @@ Respond ONLY with valid JSON in the exact format specified in the prompt. Do not
 
         if (!response || !response.text) {
           throw new Error("Empty response from AI service")
+        }
+
+        // Check if we had to use the fallback model
+        if (response.usedFallback) {
+          console.log(`Used fallback model ${FALLBACK_MODEL} instead of ${MODEL}`)
         }
 
         // Process the response
