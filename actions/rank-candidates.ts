@@ -2,7 +2,6 @@
 
 import type { Candidate, RankingResult, WeightConfig } from "@/types/resume-ranker"
 import { MODEL, FALLBACK_MODEL, OPENAI_API_KEY } from "@/lib/ai-config"
-import { isProduction, isPreview } from "@/utils/environment-detector"
 
 // Import the text preprocessor
 import { preprocessText } from "@/utils/text-preprocessor"
@@ -23,12 +22,15 @@ interface RankCandidatesProps {
 
 // Helper function to clean AI response text and extract JSON
 function extractJsonFromResponse(text: string): string {
+  console.log("Extracting JSON from response:", text.substring(0, 200) + "...")
+
   // Check if the response is wrapped in markdown code blocks
   const jsonRegex = /```(?:json)?\s*([\s\S]*?)```/
   const match = text.match(jsonRegex)
 
   // If we found a JSON code block, extract the content
   if (match && match[1]) {
+    console.log("Found JSON in code block")
     return match[1].trim()
   }
 
@@ -36,15 +38,18 @@ function extractJsonFromResponse(text: string): string {
   const jsonObjectRegex = /(\{[\s\S]*\})/
   const objectMatch = text.match(jsonObjectRegex)
   if (objectMatch && objectMatch[1]) {
+    console.log("Found JSON object directly")
     return objectMatch[1].trim()
   }
 
   // If the text already looks like JSON, return it as is
   if (text.trim().startsWith("{") && text.trim().endsWith("}")) {
+    console.log("Text already looks like JSON")
     return text.trim()
   }
 
   // Otherwise return the original text
+  console.log("Returning original text")
   return text.trim()
 }
 
@@ -57,8 +62,6 @@ export async function rankCandidates({
   weightConfig,
 }: RankCandidatesProps): Promise<RankingResult> {
   try {
-    console.log("Environment:", isProduction() ? "Production" : isPreview() ? "Preview" : "Development")
-
     // Limit the number of candidates to prevent API overload
     const MAX_CANDIDATES = 20
     let processedCandidates = [...candidates]
@@ -193,169 +196,103 @@ export async function rankCandidates({
     const prompt = createRankingPrompt(finalJobDescription, validCandidates, weightConfig)
 
     try {
-      // In production, use a more direct approach with fewer steps
-      if (isProduction() && !isPreview()) {
-        console.log("Using production-specific approach for ranking")
+      // First try with the preferred model
+      try {
+        console.log(`Attempting to use ${MODEL} for ranking...`)
 
-        try {
-          // Ensure we're using the correct API key
-          const apiKey = OPENAI_API_KEY || process.env.OPENAI_API_KEY
+        // Ensure we're using the correct API key
+        const apiKey = OPENAI_API_KEY || process.env.OPENAI_API_KEY
 
-          if (!apiKey) {
-            throw new Error("OpenAI API key is missing")
-          }
-
-          // Use the fallback model directly in production for reliability
-          const response = await generateText({
-            model: openai(FALLBACK_MODEL, {
-              temperature: 0.2,
-              maxTokens: 4000,
-              apiKey: apiKey,
-            }),
-            prompt,
-            system: `You are an expert HR professional and recruiter with deep experience in matching candidates to job requirements.
-Your task is to analyze each candidate's resume against the job description and provide a detailed ranking.
-Respond ONLY with valid JSON in the exact format specified in the prompt. Do not include markdown formatting, code blocks, or any text outside the JSON object.`,
-          })
-
-          if (!response || !response.text) {
-            throw new Error("Empty response from AI service")
-          }
-
-          // Process the response with production-specific handling
-          const result = processAIResponseForProduction(
-            response.text,
-            validCandidates,
-            finalJobDescription,
-            weightConfig,
-          )
-
-          // Add a warning if candidates were limited
-          if (candidatesLimited) {
-            const warningMessage = {
-              name: "Note: Analysis Limited",
-              score: 0,
-              strengths: [""],
-              weaknesses: [`Only the first ${MAX_CANDIDATES} candidates were analyzed due to system limitations.`],
-              analysis: `For better performance, only the first ${MAX_CANDIDATES} candidates were analyzed. Please rank candidates in smaller batches for complete results.`,
-            }
-
-            // Add the warning as a special item in the results
-            if (Array.isArray(result.rankedCandidates)) {
-              result.rankedCandidates.push(warningMessage)
-            }
-          }
-
-          return {
-            ...result,
-            preprocessStats,
-          }
-        } catch (productionError) {
-          console.error("Production-specific approach failed:", productionError)
-          return generateMockRanking(validCandidates, finalJobDescription, weightConfig, preprocessStats)
+        if (!apiKey) {
+          throw new Error("OpenAI API key is missing")
         }
-      } else {
-        // Preview environment - use the original approach
-        console.log("Using preview approach for ranking")
 
-        // First try with the preferred model
-        try {
-          console.log(`Attempting to use ${MODEL} for ranking...`)
-
-          // Ensure we're using the correct API key
-          const apiKey = OPENAI_API_KEY || process.env.OPENAI_API_KEY
-
-          if (!apiKey) {
-            throw new Error("OpenAI API key is missing")
-          }
-
-          const response = await generateText({
-            model: openai(MODEL, {
-              temperature: 0.2, // Lower temperature for more consistent results
-              maxTokens: 4000, // Ensure enough tokens for detailed analysis
-              apiKey: apiKey,
-            }),
-            prompt,
-            system: `You are an expert HR professional and recruiter with deep experience in matching candidates to job requirements.
+        const response = await generateText({
+          model: openai(MODEL, {
+            temperature: 0.2, // Lower temperature for more consistent results
+            maxTokens: 4000, // Ensure enough tokens for detailed analysis
+            apiKey: apiKey,
+          }),
+          prompt,
+          system: `You are an expert HR professional and recruiter with deep experience in matching candidates to job requirements.
 Your task is to analyze each candidate's resume against the job description and provide a detailed ranking.
 Respond ONLY with valid JSON in the exact format specified in the prompt. Do not include markdown formatting, code blocks, or any text outside the JSON object.`,
-          })
+        })
 
-          if (!response || !response.text) {
-            throw new Error("Empty response from AI service")
+        if (!response || !response.text) {
+          throw new Error("Empty response from AI service")
+        }
+
+        // Check if we had to use the fallback model
+        if (response.usedFallback) {
+          console.log(`Used fallback model ${FALLBACK_MODEL} instead of ${MODEL}`)
+        }
+
+        // Process the response
+        const result = processAIResponse(response.text, validCandidates, finalJobDescription, weightConfig)
+
+        // Add a warning if candidates were limited
+        if (candidatesLimited) {
+          const warningMessage = {
+            name: "Note: Analysis Limited",
+            score: 0,
+            strengths: [""],
+            weaknesses: [`Only the first ${MAX_CANDIDATES} candidates were analyzed due to system limitations.`],
+            analysis: `For better performance, only the first ${MAX_CANDIDATES} candidates were analyzed. Please rank candidates in smaller batches for complete results.`,
           }
 
-          // Check if we had to use the fallback model
-          if (response.usedFallback) {
-            console.log(`Used fallback model ${FALLBACK_MODEL} instead of ${MODEL}`)
+          // Add the warning as a special item in the results
+          if (Array.isArray(result.rankedCandidates)) {
+            result.rankedCandidates.push(warningMessage)
           }
+        }
 
-          // Process the response
-          const result = processAIResponse(response.text, validCandidates, finalJobDescription, weightConfig)
+        return {
+          ...result,
+          preprocessStats,
+        }
+      } catch (preferredModelError) {
+        console.error("Error with preferred model, trying fallback model:", preferredModelError)
 
-          // Add a warning if candidates were limited
-          if (candidatesLimited) {
-            const warningMessage = {
-              name: "Note: Analysis Limited",
-              score: 0,
-              strengths: [""],
-              weaknesses: [`Only the first ${MAX_CANDIDATES} candidates were analyzed due to system limitations.`],
-              analysis: `For better performance, only the first ${MAX_CANDIDATES} candidates were analyzed. Please rank candidates in smaller batches for complete results.`,
-            }
-
-            // Add the warning as a special item in the results
-            if (Array.isArray(result.rankedCandidates)) {
-              result.rankedCandidates.push(warningMessage)
-            }
-          }
-
-          return {
-            ...result,
-            preprocessStats,
-          }
-        } catch (preferredModelError) {
-          console.error("Error with preferred model, trying fallback model:", preferredModelError)
-
-          // Try with the fallback model
-          const response = await generateText({
-            model: openai(FALLBACK_MODEL, {
-              temperature: 0.2,
-              maxTokens: 4000,
-              apiKey: OPENAI_API_KEY,
-            }),
-            prompt,
-            system: `You are an expert HR professional and recruiter with deep experience in matching candidates to job requirements.
+        // Try with the fallback model
+        const response = await generateText({
+          model: openai(FALLBACK_MODEL, {
+            temperature: 0.2,
+            maxTokens: 4000,
+            apiKey: OPENAI_API_KEY,
+          }),
+          prompt,
+          system: `You are an expert HR professional and recruiter with deep experience in matching candidates to job requirements.
 Your task is to analyze each candidate's resume against the job description and provide a detailed ranking.
 Respond ONLY with valid JSON in the exact format specified in the prompt. Do not include markdown formatting, code blocks, or any text outside the JSON object.`,
-          })
+        })
 
-          if (!response || !response.text) {
-            throw new Error("Empty response from fallback AI service")
+        if (!response || !response.text) {
+          throw new Error("Empty response from fallback AI service")
+        }
+
+        // Process the response
+        const result = processAIResponse(response.text, validCandidates, finalJobDescription, weightConfig)
+
+        // Add a warning if candidates were limited
+        if (candidatesLimited) {
+          const warningMessage = {
+            name: "Note: Analysis Limited",
+            score: 0,
+            strengths: [""],
+            weaknesses: [`Only the first ${MAX_CANDIDATES} candidates were analyzed due to system limitations.`],
+            analysis: `For better performance, only the first ${MAX_CANDIDATES} candidates were analyzed. Please rank candidates in smaller batches for complete results.`,
           }
 
-          // Process the response
-          const result = processAIResponse(response.text, validCandidates, finalJobDescription, weightConfig)
-
-          // Add a warning if candidates were limited
-          if (candidatesLimited) {
-            const warningMessage = {
-              name: "Note: Analysis Limited",
-              score: 0,
-              strengths: [""],
-              weaknesses: [`Only the first ${MAX_CANDIDATES} candidates were analyzed due to system limitations.`],
-              analysis: `For better performance, only the first ${MAX_CANDIDATES} candidates were analyzed. Please rank candidates in smaller batches for complete results.`,
-            }
-
-            // Add the warning as a special item in the results
-            if (Array.isArray(result.rankedCandidates)) {
-              result.rankedCandidates.push(warningMessage)
-            }
+          // Add the warning as a special item in the results
+          if (Array.isArray(result.rankedCandidates)) {
+            result.rankedCandidates.push(warningMessage)
           }
+        }
 
-          return {
-            ...result,
-            preprocessStats,
-          }
+        return {
+          ...result,
+          preprocessStats,
         }
       }
     } catch (apiError) {
@@ -369,124 +306,7 @@ Respond ONLY with valid JSON in the exact format specified in the prompt. Do not
   }
 }
 
-// Production-specific response processing
-function processAIResponseForProduction(
-  responseText: string,
-  validCandidates: Candidate[],
-  jobDescription: string,
-  weightConfig?: WeightConfig,
-): RankingResult {
-  try {
-    if (!responseText || typeof responseText !== "string") {
-      console.error("Invalid response from AI: empty or not a string")
-      return generateMockRanking(validCandidates, jobDescription, weightConfig)
-    }
-
-    console.log("Processing production AI response")
-
-    // Clean the response text to handle markdown formatting
-    const cleanedText = extractJsonFromResponse(responseText)
-
-    try {
-      // Try multiple approaches to parse the JSON
-      let result: RankingResult | null = null
-
-      // Approach 1: Direct JSON parsing
-      try {
-        result = JSON.parse(cleanedText) as RankingResult
-      } catch (jsonError) {
-        console.error("Production JSON parse error (approach 1):", jsonError)
-
-        // Approach 2: Fix common JSON issues
-        try {
-          const fixedText = cleanedText
-            .replace(/\n/g, " ")
-            .replace(/,\s*}/g, "}")
-            .replace(/,\s*]/g, "]")
-            .replace(/(['"])?([a-zA-Z0-9_]+)(['"])?:/g, '"$2":')
-            .replace(/\\"/g, '"')
-            .replace(/"{/g, "{")
-            .replace(/}"/g, "}")
-
-          result = JSON.parse(fixedText) as RankingResult
-        } catch (secondError) {
-          console.error("Production JSON parse error (approach 2):", secondError)
-
-          // Approach 3: Extract JSON object
-          try {
-            const jsonStart = cleanedText.indexOf("{")
-            const jsonEnd = cleanedText.lastIndexOf("}")
-
-            if (jsonStart !== -1 && jsonEnd !== -1 && jsonEnd > jsonStart) {
-              const extractedJson = cleanedText.substring(jsonStart, jsonEnd + 1)
-              result = JSON.parse(extractedJson) as RankingResult
-            } else {
-              throw new Error("Could not extract valid JSON")
-            }
-          } catch (thirdError) {
-            console.error("Production JSON parse error (approach 3):", thirdError)
-
-            // If all parsing approaches fail, use the mock ranking
-            return generateMockRanking(validCandidates, jobDescription, weightConfig)
-          }
-        }
-      }
-
-      // If we couldn't parse the JSON, use the mock ranking
-      if (!result) {
-        console.error("Failed to parse JSON in production")
-        return generateMockRanking(validCandidates, jobDescription, weightConfig)
-      }
-
-      // Validate and fix the result structure
-      if (!result.rankedCandidates) {
-        console.error("Missing rankedCandidates in production result:", result)
-
-        // Try to extract from a different property if available
-        if (result.candidates && Array.isArray(result.candidates)) {
-          result.rankedCandidates = result.candidates
-        } else {
-          return generateMockRanking(validCandidates, jobDescription, weightConfig)
-        }
-      }
-
-      if (!Array.isArray(result.rankedCandidates)) {
-        console.error("rankedCandidates is not an array in production:", result.rankedCandidates)
-        return generateMockRanking(validCandidates, jobDescription, weightConfig)
-      }
-
-      if (result.rankedCandidates.length === 0) {
-        console.error("Empty rankedCandidates array in production")
-        return generateMockRanking(validCandidates, jobDescription, weightConfig)
-      }
-
-      // Ensure all candidates have the required fields
-      const validatedCandidates = result.rankedCandidates.map((candidate) => {
-        return {
-          name: candidate.name || "Unknown Candidate",
-          score: typeof candidate.score === "number" ? candidate.score : 50,
-          strengths: Array.isArray(candidate.strengths) ? candidate.strengths : ["Has relevant experience"],
-          weaknesses: Array.isArray(candidate.weaknesses) ? candidate.weaknesses : [],
-          analysis: candidate.analysis || "This candidate has been evaluated based on their resume.",
-          categoryScores: candidate.categoryScores || generateDefaultCategoryScores(),
-        }
-      })
-
-      // Sort candidates by score in descending order
-      validatedCandidates.sort((a, b) => b.score - a.score)
-
-      return { rankedCandidates: validatedCandidates }
-    } catch (parseError) {
-      console.error("Error parsing production AI response:", parseError, "Response:", responseText)
-      return generateMockRanking(validCandidates, jobDescription, weightConfig)
-    }
-  } catch (error) {
-    console.error("Error processing production AI response:", error)
-    return generateMockRanking(validCandidates, jobDescription, weightConfig)
-  }
-}
-
-// Helper function to process AI response (for preview environment)
+// Helper function to process AI response
 function processAIResponse(
   responseText: string,
   validCandidates: Candidate[],
@@ -539,14 +359,51 @@ function processAIResponse(
             }
           } catch (thirdError) {
             console.error("Third JSON parse error:", thirdError)
-            throw jsonError // Throw the original error if all fixes didn't work
+
+            // Try one last approach - use regex to find the most JSON-like structure
+            try {
+              const jsonLikeRegex = /\{(?:[^{}]|(\{(?:[^{}]|(\{(?:[^{}]|(\{[^{}]*\}))*\}))*\}))*\}/g
+              const matches = cleanedText.match(jsonLikeRegex)
+
+              if (matches && matches.length > 0) {
+                // Find the longest match, which is likely the most complete JSON
+                const longestMatch = matches.reduce((a, b) => (a.length > b.length ? a : b))
+                result = JSON.parse(longestMatch) as RankingResult
+              } else {
+                throw new Error("No JSON-like structures found")
+              }
+            } catch (fourthError) {
+              console.error("Fourth JSON parse error:", fourthError)
+              throw jsonError // Throw the original error if all fixes didn't work
+            }
           }
         }
       }
 
       // Validate the result structure
-      if (!result.rankedCandidates || !Array.isArray(result.rankedCandidates) || result.rankedCandidates.length === 0) {
-        console.error("Invalid response structure from AI", cleanedText)
+      if (!result) {
+        console.error("Empty result after parsing")
+        return generateMockRanking(validCandidates, jobDescription, weightConfig)
+      }
+
+      if (!result.rankedCandidates) {
+        console.error("Missing rankedCandidates in result:", result)
+
+        // Try to extract from a different property if available
+        if (result.candidates && Array.isArray(result.candidates)) {
+          result.rankedCandidates = result.candidates
+        } else {
+          return generateMockRanking(validCandidates, jobDescription, weightConfig)
+        }
+      }
+
+      if (!Array.isArray(result.rankedCandidates)) {
+        console.error("rankedCandidates is not an array:", result.rankedCandidates)
+        return generateMockRanking(validCandidates, jobDescription, weightConfig)
+      }
+
+      if (result.rankedCandidates.length === 0) {
+        console.error("Empty rankedCandidates array")
         return generateMockRanking(validCandidates, jobDescription, weightConfig)
       }
 
@@ -603,15 +460,6 @@ IMPORTANT: You have a limited time to analyze these ${candidates.length} candida
   `
       : ""
 
-  // Production-specific prompt adjustments
-  const environmentSpecificInstructions =
-    isProduction() && !isPreview()
-      ? `
-IMPORTANT: Your response MUST be a valid JSON object with the exact structure specified below.
-Do not include any text outside the JSON object. Do not use markdown formatting or code blocks.
-    `
-      : ""
-
   return `
 Job Description:
 ${jobDescription}
@@ -619,8 +467,6 @@ ${jobDescription}
 ${weightInstructions}
 
 ${timeConstraintWarning}
-
-${environmentSpecificInstructions}
 
 Candidates:
 ${candidates
