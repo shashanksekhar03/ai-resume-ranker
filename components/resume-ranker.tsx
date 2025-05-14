@@ -392,11 +392,6 @@ export function ResumeRanker() {
     setIsLoading(true)
 
     try {
-      // Calculate total original text length
-      const originalJobDescLength = jobDescription.length
-      const originalCandidatesLength = validCandidates.reduce((total, c) => total + c.resume.length, 0)
-      const originalTotalLength = originalJobDescLength + originalCandidatesLength
-
       // Add a timeout to prevent infinite loading if the API doesn't respond
       const rankingPromise = rankCandidates({
         jobDescription,
@@ -406,9 +401,9 @@ export function ResumeRanker() {
         weightConfig,
       })
 
-      // Add a timeout of 120 seconds
+      // Add a timeout of 30 seconds
       const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error("Ranking request timed out after 120 seconds")), 120000),
+        setTimeout(() => reject(new Error("Ranking request timed out after 30 seconds")), 30000),
       )
 
       // Race the ranking promise against the timeout
@@ -425,8 +420,12 @@ export function ResumeRanker() {
       } else {
         // Estimate preprocessing stats based on typical reduction
         setPreprocessStats({
-          original: originalTotalLength,
-          processed: Math.floor(originalTotalLength * 0.7), // Assume 30% reduction
+          original:
+            validCandidates.reduce((total, c) => total + (c.resume?.length || 0), 0) + (jobDescription?.length || 0),
+          processed: Math.floor(
+            (validCandidates.reduce((total, c) => total + (c.resume?.length || 0), 0) + (jobDescription?.length || 0)) *
+              0.7,
+          ),
           percentReduction: 30,
         })
       }

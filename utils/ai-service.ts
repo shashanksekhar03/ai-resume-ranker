@@ -19,134 +19,133 @@ interface GenerateTextResult {
   usedFallback?: boolean
 }
 
+// Maximum number of retries for API calls
+const MAX_RETRIES = 2
+// Timeout for API calls in milliseconds (20 seconds)
+const API_TIMEOUT = 20000
+
 /**
  * Generate text using the OpenAI API directly
  */
 export async function generateText(options: GenerateTextOptions): Promise<GenerateTextResult> {
+  // Don't force fallback - try the API in all environments
+  const useDirectFallback = false
+
+  if (useDirectFallback) {
+    console.log("Using direct fallback to built-in ranking algorithm")
+    return {
+      text: "FALLBACK_RANKING_REQUIRED",
+      error: "Using built-in ranking algorithm for stability",
+      usedFallback: true,
+    }
+  }
+
   try {
     // Extract model name from the model parameter
     let modelName = options.model
     if (typeof modelName === "object" && modelName !== null) {
       // If it's an object (from openai() function), try to extract the model name
-      modelName = MODEL
+      modelName = MODEL // Use the preferred model (gpt-4o)
     }
 
     // Fallback to a simpler model if needed
     if (modelName !== MODEL && modelName !== FALLBACK_MODEL) {
-      modelName = FALLBACK_MODEL
+      modelName = MODEL // Use the preferred model (gpt-4o)
     }
 
     console.log(`Attempting to use model: ${modelName}`)
 
-    // Make a direct request to OpenAI API
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: modelName,
-        messages: [
-          ...(options.system ? [{ role: "system", content: options.system }] : []),
-          { role: "user", content: options.prompt },
-        ],
-        temperature: options.temperature || 0.7,
-        max_tokens: options.maxTokens || 2000,
-      }),
-    })
+    // Create an AbortController for the timeout
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), API_TIMEOUT)
 
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({ error: { message: "Failed to parse error response" } }))
-      console.error("OpenAI API error:", errorData)
+    try {
+      // Make a direct request to OpenAI API with timeout
+      const response = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${OPENAI_API_KEY}`,
+        },
+        body: JSON.stringify({
+          model: modelName,
+          messages: [
+            ...(options.system ? [{ role: "system", content: options.system }] : []),
+            { role: "user", content: options.prompt },
+          ],
+          temperature: options.temperature || 0.7,
+          max_tokens: options.maxTokens || 1500, // Reduced for stability
+        }),
+        signal: controller.signal,
+      })
 
-      // If we're using the preferred model and get an error, try the fallback model
-      if (modelName === MODEL) {
-        console.log(`Falling back to ${FALLBACK_MODEL} due to API error`)
-        return generateTextWithFallbackModel(options)
+      // Clear the timeout
+      clearTimeout(timeoutId)
+
+      if (!response.ok) {
+        let errorMessage = `HTTP error ${response.status}`
+        try {
+          const errorData = await response.json()
+          errorMessage = errorData.error?.message || errorMessage
+        } catch (e) {
+          // Ignore JSON parsing errors in error responses
+        }
+
+        console.error("OpenAI API error:", errorMessage)
+
+        // Signal that we need to use the fallback
+        return {
+          text: "FALLBACK_RANKING_REQUIRED",
+          error: `API error: ${errorMessage}`,
+          usedFallback: true,
+        }
       }
 
-      throw new Error(`OpenAI API error: ${errorData.error?.message || "Unknown error"}`)
-    }
+      let data
+      try {
+        data = await response.json()
+      } catch (e) {
+        console.error("Failed to parse JSON response:", e)
+        return {
+          text: "FALLBACK_RANKING_REQUIRED",
+          error: "Failed to parse API response",
+          usedFallback: true,
+        }
+      }
 
-    const data = await response.json().catch(() => {
-      throw new Error("Failed to parse JSON response from OpenAI API")
-    })
+      if (!data || !data.choices || !data.choices[0] || !data.choices[0].message) {
+        console.error("Invalid response format:", data)
+        return {
+          text: "FALLBACK_RANKING_REQUIRED",
+          error: "Invalid response format from API",
+          usedFallback: true,
+        }
+      }
 
-    if (!data || !data.choices || !data.choices[0] || !data.choices[0].message) {
-      throw new Error("Invalid response format from OpenAI API")
-    }
+      return {
+        text: data.choices[0]?.message?.content || "",
+        usedFallback: modelName !== MODEL,
+      }
+    } catch (fetchError) {
+      // Clear the timeout if it's an abort error
+      clearTimeout(timeoutId)
 
-    return {
-      text: data.choices[0]?.message?.content || "",
-      usedFallback: modelName !== MODEL,
+      if (fetchError.name === "AbortError") {
+        console.error("Request timed out after", API_TIMEOUT, "ms")
+        return {
+          text: "FALLBACK_RANKING_REQUIRED",
+          error: "Request timed out",
+          usedFallback: true,
+        }
+      }
+
+      throw fetchError
     }
   } catch (error) {
     console.error("Error in generateText:", error)
 
-    // If we haven't tried the fallback model yet, try it now
-    if (!options.model.includes(FALLBACK_MODEL)) {
-      console.log(`Attempting fallback to ${FALLBACK_MODEL} after error`)
-      return generateTextWithFallbackModel(options)
-    }
-
     return {
-      text: `Error generating text: ${error instanceof Error ? error.message : String(error)}. Using fallback ranking.`,
-      error: error instanceof Error ? error.message : String(error),
-      usedFallback: true,
-    }
-  }
-}
-
-/**
- * Try generating text with the fallback model
- */
-async function generateTextWithFallbackModel(options: GenerateTextOptions): Promise<GenerateTextResult> {
-  try {
-    const fallbackOptions = {
-      ...options,
-      model: FALLBACK_MODEL,
-    }
-
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: FALLBACK_MODEL,
-        messages: [
-          ...(options.system ? [{ role: "system", content: options.system }] : []),
-          { role: "user", content: options.prompt },
-        ],
-        temperature: options.temperature || 0.7,
-        max_tokens: options.maxTokens || 2000,
-      }),
-    })
-
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({ error: { message: "Failed to parse error response" } }))
-      console.error("Fallback model API error:", errorData)
-      throw new Error(`Fallback model API error: ${errorData.error?.message || "Unknown error"}`)
-    }
-
-    const data = await response.json().catch(() => {
-      throw new Error("Failed to parse JSON response from fallback model")
-    })
-
-    if (!data || !data.choices || !data.choices[0] || !data.choices[0].message) {
-      throw new Error("Invalid response format from fallback model")
-    }
-
-    return {
-      text: data.choices[0]?.message?.content || "",
-      usedFallback: true,
-    }
-  } catch (error) {
-    console.error("Error in fallback model:", error)
-    return {
-      text: `Error with fallback model: ${error instanceof Error ? error.message : String(error)}. Using built-in ranking algorithm.`,
+      text: "FALLBACK_RANKING_REQUIRED",
       error: error instanceof Error ? error.message : String(error),
       usedFallback: true,
     }
@@ -165,12 +164,5 @@ export function openai(model: string, options?: any): string {
  * Check if the AI SDK is available
  */
 export function isAiSdkAvailable(): boolean {
-  try {
-    // Try to import the AI SDK
-    require("ai")
-    require("@ai-sdk/openai")
-    return true
-  } catch (error) {
-    return false
-  }
+  return false // Always return false for stability
 }

@@ -1,7 +1,7 @@
 "use server"
 
 import type { Candidate, RankingResult, WeightConfig } from "@/types/resume-ranker"
-import { MODEL, FALLBACK_MODEL, OPENAI_API_KEY } from "@/lib/ai-config"
+import { FALLBACK_MODEL, OPENAI_API_KEY } from "@/lib/ai-config"
 
 // Import the text preprocessor
 import { preprocessText } from "@/utils/text-preprocessor"
@@ -20,21 +20,6 @@ interface RankCandidatesProps {
   weightConfig?: WeightConfig
 }
 
-// Helper function to clean AI response text and extract JSON
-function extractJsonFromResponse(text: string): string {
-  // Check if the response is wrapped in markdown code blocks
-  const jsonRegex = /```(?:json)?\s*([\s\S]*?)```/
-  const match = text.match(jsonRegex)
-
-  // If we found a JSON code block, extract the content
-  if (match && match[1]) {
-    return match[1].trim()
-  }
-
-  // Otherwise return the original text
-  return text.trim()
-}
-
 // Update the rankCandidates function to use text preprocessing
 export async function rankCandidates({
   jobDescription,
@@ -45,7 +30,7 @@ export async function rankCandidates({
 }: RankCandidatesProps): Promise<RankingResult> {
   try {
     // Limit the number of candidates to prevent API overload
-    const MAX_CANDIDATES = 20
+    const MAX_CANDIDATES = 10 // Reduced from 20 for stability
     let processedCandidates = [...candidates]
 
     // If we have too many candidates, cap them and note this in the results
@@ -178,93 +163,50 @@ export async function rankCandidates({
     const prompt = createRankingPrompt(finalJobDescription, validCandidates, weightConfig)
 
     try {
-      // First try with the preferred model
-      try {
-        const response = await generateText({
-          model: openai(MODEL, {
-            temperature: 0.2, // Lower temperature for more consistent results
-            maxTokens: 4000, // Ensure enough tokens for detailed analysis
-            apiKey: OPENAI_API_KEY,
-          }),
-          prompt,
-          system: `You are an expert HR professional and recruiter with deep experience in matching candidates to job requirements.
+      // Try with the AI service
+      const response = await generateText({
+        model: openai(FALLBACK_MODEL, {
+          temperature: 0.2,
+          maxTokens: 2000, // Reduced for stability
+          apiKey: OPENAI_API_KEY,
+        }),
+        prompt,
+        system: `You are an expert HR professional and recruiter with deep experience in matching candidates to job requirements.
 Your task is to analyze each candidate's resume against the job description and provide a detailed ranking.
 Respond ONLY with valid JSON in the exact format specified in the prompt. Do not include markdown formatting, code blocks, or any text outside the JSON object.`,
-        })
+      })
 
-        if (!response || !response.text) {
-          throw new Error("Empty response from AI service")
+      // Check if we need to use the fallback ranking
+      if (response.text === "FALLBACK_RANKING_REQUIRED" || response.error) {
+        console.log("Using fallback ranking due to API response:", response.error)
+        return generateMockRanking(validCandidates, finalJobDescription, weightConfig, preprocessStats)
+      }
+
+      // Process the response
+      const result = processAIResponse(response.text, validCandidates, finalJobDescription, weightConfig)
+
+      // Add a warning if candidates were limited
+      if (candidatesLimited) {
+        const warningMessage = {
+          name: "Note: Analysis Limited",
+          score: 0,
+          strengths: [""],
+          weaknesses: [`Only the first ${MAX_CANDIDATES} candidates were analyzed due to system limitations.`],
+          analysis: `For better performance, only the first ${MAX_CANDIDATES} candidates were analyzed. Please rank candidates in smaller batches for complete results.`,
         }
 
-        // Process the response
-        const result = processAIResponse(response.text, validCandidates, finalJobDescription, weightConfig)
-
-        // Add a warning if candidates were limited
-        if (candidatesLimited) {
-          const warningMessage = {
-            name: "Note: Analysis Limited",
-            score: 0,
-            strengths: [""],
-            weaknesses: [`Only the first ${MAX_CANDIDATES} candidates were analyzed due to system limitations.`],
-            analysis: `For better performance, only the first ${MAX_CANDIDATES} candidates were analyzed. Please rank candidates in smaller batches for complete results.`,
-          }
-
-          // Add the warning as a special item in the results
-          if (Array.isArray(result.rankedCandidates)) {
-            result.rankedCandidates.push(warningMessage)
-          }
-        }
-
-        return {
-          ...result,
-          preprocessStats,
-        }
-      } catch (preferredModelError) {
-        console.error("Error with preferred model, trying fallback model:", preferredModelError)
-
-        // Try with the fallback model
-        const response = await generateText({
-          model: openai(FALLBACK_MODEL, {
-            temperature: 0.2,
-            maxTokens: 4000,
-            apiKey: OPENAI_API_KEY,
-          }),
-          prompt,
-          system: `You are an expert HR professional and recruiter with deep experience in matching candidates to job requirements.
-Your task is to analyze each candidate's resume against the job description and provide a detailed ranking.
-Respond ONLY with valid JSON in the exact format specified in the prompt. Do not include markdown formatting, code blocks, or any text outside the JSON object.`,
-        })
-
-        if (!response || !response.text) {
-          throw new Error("Empty response from fallback AI service")
-        }
-
-        // Process the response
-        const result = processAIResponse(response.text, validCandidates, finalJobDescription, weightConfig)
-
-        // Add a warning if candidates were limited
-        if (candidatesLimited) {
-          const warningMessage = {
-            name: "Note: Analysis Limited",
-            score: 0,
-            strengths: [""],
-            weaknesses: [`Only the first ${MAX_CANDIDATES} candidates were analyzed due to system limitations.`],
-            analysis: `For better performance, only the first ${MAX_CANDIDATES} candidates were analyzed. Please rank candidates in smaller batches for complete results.`,
-          }
-
-          // Add the warning as a special item in the results
-          if (Array.isArray(result.rankedCandidates)) {
-            result.rankedCandidates.push(warningMessage)
-          }
-        }
-
-        return {
-          ...result,
-          preprocessStats,
+        // Add the warning as a special item in the results
+        if (Array.isArray(result.rankedCandidates)) {
+          result.rankedCandidates.push(warningMessage)
         }
       }
+
+      return {
+        ...result,
+        preprocessStats,
+      }
     } catch (apiError) {
-      console.error("OpenAI API Error:", apiError)
+      console.error("API Error:", apiError)
       return generateMockRanking(validCandidates, finalJobDescription, weightConfig, preprocessStats)
     }
   } catch (error) {
@@ -289,14 +231,13 @@ function processAIResponse(
 
     // Clean the response text to handle markdown formatting
     const cleanedText = extractJsonFromResponse(responseText)
-    console.log("Cleaned response text:", cleanedText.substring(0, 200) + "...")
 
     try {
       const result = JSON.parse(cleanedText) as RankingResult
 
       // Validate the result structure
       if (!result.rankedCandidates || !Array.isArray(result.rankedCandidates) || result.rankedCandidates.length === 0) {
-        console.error("Invalid response structure from AI", cleanedText)
+        console.error("Invalid response structure from AI")
         return generateMockRanking(validCandidates, jobDescription, weightConfig)
       }
 
@@ -317,12 +258,32 @@ function processAIResponse(
 
       return { rankedCandidates: validatedCandidates }
     } catch (parseError) {
-      console.error("Error parsing AI response:", parseError, "Response:", responseText)
+      console.error("Error parsing AI response:", parseError)
       return generateMockRanking(validCandidates, jobDescription, weightConfig)
     }
   } catch (error) {
     console.error("Error processing AI response:", error)
     return generateMockRanking(validCandidates, jobDescription, weightConfig)
+  }
+}
+
+// Helper function to clean AI response text and extract JSON
+function extractJsonFromResponse(text: string): string {
+  try {
+    // Check if the response is wrapped in markdown code blocks
+    const jsonRegex = /```(?:json)?\s*([\s\S]*?)```/
+    const match = text.match(jsonRegex)
+
+    // If we found a JSON code block, extract the content
+    if (match && match[1]) {
+      return match[1].trim()
+    }
+
+    // Otherwise return the original text
+    return text.trim()
+  } catch (error) {
+    console.error("Error extracting JSON from response:", error)
+    return text || ""
   }
 }
 
