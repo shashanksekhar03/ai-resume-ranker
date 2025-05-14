@@ -25,6 +25,8 @@ import {
 } from "@/utils/name-detector"
 import { parseDocument } from "@/utils/document-parser"
 import { MultiFileUpload } from "@/components/multi-file-upload"
+// First, add the import for the ProcessingStatus component
+import { ProcessingStatus } from "@/components/processing-status"
 
 export function ResumeRanker() {
   // Initialize with empty candidates array instead of 3 default candidates
@@ -270,6 +272,7 @@ export function ResumeRanker() {
       if (files.length === 0) return
 
       setIsBulkProcessing(true)
+      setError(null) // Clear any previous errors
 
       try {
         const newCandidates: Candidate[] = []
@@ -277,84 +280,99 @@ export function ResumeRanker() {
         const newFileStatuses: Record<string, string> = {}
         const newDetectedNames: Record<string, boolean> = {}
 
-        // Process files in batches to avoid overwhelming the browser
-        // This helps prevent memory issues with many large files
+        // Process files in smaller batches to avoid memory issues
         const batchSize = 3
-        for (let i = 0; i < files.length; i += batchSize) {
-          const batch = files.slice(i, i + batchSize)
+        const totalBatches = Math.ceil(files.length / batchSize)
 
-          // Process each file in the batch concurrently
-          await Promise.all(
-            batch.map(async (file) => {
-              try {
-                const candidateId = Date.now().toString() + Math.random().toString(36).substring(2, 9)
+        for (let batchIndex = 0; batchIndex < totalBatches; batchIndex++) {
+          const batchStart = batchIndex * batchSize
+          const batch = files.slice(batchStart, batchStart + batchSize)
 
-                newCandidateFiles[candidateId] = file
-                newFileStatuses[candidateId] = "processing"
-
-                // Extract text from the file
-                const extractedText = await parseDocument(file)
-
-                if (extractedText && extractedText.trim()) {
-                  // Try to detect the name from the extracted text
-                  const { name, confidence } = detectNameFromResume(extractedText)
-
-                  let candidateName = ""
-
-                  if (name && confidence > 0.4) {
-                    candidateName = name
-                    newDetectedNames[candidateId] = true
-                  } else {
-                    // Try to extract email and generate name from it
-                    const email = extractEmail(extractedText)
-                    if (email) {
-                      const generatedName = generateNameFromEmail(email)
-                      if (generatedName) {
-                        candidateName = generatedName
-                        newDetectedNames[candidateId] = true
-                      }
-                    }
-
-                    // If still no name, try to extract from filename
-                    if (!candidateName) {
-                      const filenameBasedName = extractNameFromFilename(file.name)
-                      if (filenameBasedName) {
-                        candidateName = filenameBasedName
-                        newDetectedNames[candidateId] = true
-                      }
-                    }
-                  }
-
-                  // If still no name, use a generic one
-                  if (!candidateName) {
-                    candidateName = `Candidate ${candidates.length + newCandidates.length + 1}`
-                  }
-
-                  newCandidates.push({
-                    id: candidateId,
-                    name: candidateName,
-                    resume: extractedText,
-                  })
-
-                  newFileStatuses[candidateId] = "success"
-                } else {
-                  newFileStatuses[candidateId] = "error"
-                }
-              } catch (error) {
-                console.error("Error processing file:", error)
-              }
-            }),
+          // Show progress
+          setError(
+            `Processing batch ${batchIndex + 1}/${totalBatches} (${batchStart + 1}-${Math.min(batchStart + batchSize, files.length)} of ${files.length} files)...`,
           )
 
-          // Small delay between batches to let the browser breathe
-          await new Promise((resolve) => setTimeout(resolve, 50))
+          // Process each file in the batch sequentially to reduce memory pressure
+          for (const file of batch) {
+            try {
+              const candidateId = Date.now().toString() + Math.random().toString(36).substring(2, 9)
+
+              newCandidateFiles[candidateId] = file
+              newFileStatuses[candidateId] = "processing"
+
+              // Extract text from the file with memory optimization
+              const extractedText = await parseDocument(file)
+
+              if (extractedText && extractedText.trim()) {
+                // Try to detect the name from the extracted text
+                const { name, confidence } = detectNameFromResume(extractedText)
+
+                let candidateName = ""
+
+                if (name && confidence > 0.4) {
+                  candidateName = name
+                  newDetectedNames[candidateId] = true
+                } else {
+                  // Try to extract email and generate name from it
+                  const email = extractEmail(extractedText)
+                  if (email) {
+                    const generatedName = generateNameFromEmail(email)
+                    if (generatedName) {
+                      candidateName = generatedName
+                      newDetectedNames[candidateId] = true
+                    }
+                  }
+
+                  // If still no name, try to extract from filename
+                  if (!candidateName) {
+                    const filenameBasedName = extractNameFromFilename(file.name)
+                    if (filenameBasedName) {
+                      candidateName = filenameBasedName
+                      newDetectedNames[candidateId] = true
+                    }
+                  }
+                }
+
+                // If still no name, use a generic one
+                if (!candidateName) {
+                  candidateName = `Candidate ${candidates.length + newCandidates.length + 1}`
+                }
+
+                newCandidates.push({
+                  id: candidateId,
+                  name: candidateName,
+                  resume: extractedText,
+                })
+
+                newFileStatuses[candidateId] = "success"
+              } else {
+                newFileStatuses[candidateId] = "error"
+              }
+            } catch (error) {
+              console.error("Error processing file:", error)
+              // Continue with other files even if one fails
+            }
+
+            // Small delay between files to let the browser breathe
+            await new Promise((resolve) => setTimeout(resolve, 50))
+          }
+
+          // Update state with the batch results to show progress
+          setCandidates((prev) => [
+            ...prev,
+            ...newCandidates.slice(batchIndex * batchSize, (batchIndex + 1) * batchSize),
+          ])
+          setCandidateFiles((prev) => ({ ...prev, ...newCandidateFiles }))
+          setFileProcessingStatus((prev) => ({ ...prev, ...newFileStatuses }))
+          setDetectedNames((prev) => ({ ...prev, ...newDetectedNames }))
+
+          // Larger delay between batches to let the browser process the updates
+          await new Promise((resolve) => setTimeout(resolve, 100))
         }
 
-        // Update state with all the new candidates at once
-        setCandidates((prev) => [...prev, ...newCandidates])
-        setCandidateFiles((prev) => ({ ...prev, ...newCandidateFiles }))
-        setFileProcessingStatus((prev) => ({ ...prev, ...newFileStatuses }))
-        setDetectedNames((prev) => ({ ...prev, ...newDetectedNames }))
+        // Clear the processing message
+        setError(null)
       } catch (error) {
         console.error("Error handling multiple files:", error)
         setError(`Error processing files: ${error instanceof Error ? error.message : String(error)}`)
@@ -362,7 +380,7 @@ export function ResumeRanker() {
         setIsBulkProcessing(false)
       }
     },
-    [candidates.length, parseDocument],
+    [candidates.length],
   )
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -384,13 +402,20 @@ export function ResumeRanker() {
 
     const validCandidates = candidates.filter((c) => {
       // A candidate is valid if they have a resume (text OR file)
-      // Name is no longer required as we'll auto-detect it
       return c.resume.trim() || candidateFiles[c.id]
     })
 
     if (validCandidates.length < 1) {
       alert("Please enter at least one candidate resume (text or file)")
       return
+    }
+
+    // Warn if there are many candidates
+    if (validCandidates.length > 20) {
+      const proceed = window.confirm(
+        `You are about to rank ${validCandidates.length} candidates, which may take some time and could cause performance issues. Would you like to proceed?`,
+      )
+      if (!proceed) return
     }
 
     setIsLoading(true)
@@ -401,41 +426,95 @@ export function ResumeRanker() {
       const originalCandidatesLength = validCandidates.reduce((total, c) => total + c.resume.length, 0)
       const originalTotalLength = originalJobDescLength + originalCandidatesLength
 
-      // Add a timeout to prevent infinite loading if the API doesn't respond
-      const rankingPromise = rankCandidates({
-        jobDescription,
-        candidates: validCandidates,
-        jobDescriptionFile,
-        candidateFiles,
-        weightConfig,
-      })
+      // Process candidates in batches if there are many
+      if (validCandidates.length > 10) {
+        // Process in batches of 10
+        const batchSize = 10
+        const batches = Math.ceil(validCandidates.length / batchSize)
 
-      // Add a timeout of 120 seconds
-      const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error("Ranking request timed out after 120 seconds")), 120000),
-      )
+        let allRankedCandidates: any[] = []
 
-      // Race the ranking promise against the timeout
-      const result = (await Promise.race([rankingPromise, timeoutPromise])) as RankingResult
+        for (let i = 0; i < batches; i++) {
+          const batchStart = i * batchSize
+          const batchEnd = Math.min((i + 1) * batchSize, validCandidates.length)
+          const batchCandidates = validCandidates.slice(batchStart, batchEnd)
 
-      // Validate the result
-      if (!result || !result.rankedCandidates || !Array.isArray(result.rankedCandidates)) {
-        throw new Error("Invalid response format from ranking service")
-      }
+          setError(
+            `Processing batch ${i + 1}/${batches} (candidates ${batchStart + 1}-${batchEnd} of ${validCandidates.length})...`,
+          )
 
-      // If the result includes preprocessed stats, show them
-      if (result.preprocessStats) {
-        setPreprocessStats(result.preprocessStats)
+          // Get candidate files for this batch
+          const batchCandidateFiles: Record<string, File | null> = {}
+          batchCandidates.forEach((c) => {
+            if (candidateFiles[c.id]) {
+              batchCandidateFiles[c.id] = candidateFiles[c.id]
+            }
+          })
+
+          // Rank this batch
+          const batchResult = await rankCandidates({
+            jobDescription,
+            candidates: batchCandidates,
+            jobDescriptionFile,
+            candidateFiles: batchCandidateFiles,
+            weightConfig,
+          })
+
+          // Add to overall results
+          if (batchResult && batchResult.rankedCandidates) {
+            allRankedCandidates = [...allRankedCandidates, ...batchResult.rankedCandidates]
+
+            // Save preprocessing stats from first batch
+            if (i === 0 && batchResult.preprocessStats) {
+              setPreprocessStats(batchResult.preprocessStats)
+            }
+          }
+        }
+
+        // Sort all candidates by score
+        allRankedCandidates.sort((a, b) => b.score - a.score)
+
+        // Create final result
+        const result: RankingResult = {
+          rankedCandidates: allRankedCandidates,
+          preprocessStats: preprocessStats || {
+            original: originalTotalLength,
+            processed: Math.floor(originalTotalLength * 0.7),
+            percentReduction: 30,
+          },
+        }
+
+        setResults(result)
+        setError(null) // Clear processing message
       } else {
-        // Estimate preprocessing stats based on typical reduction
-        setPreprocessStats({
-          original: originalTotalLength,
-          processed: Math.floor(originalTotalLength * 0.7), // Assume 30% reduction
-          percentReduction: 30,
+        // For smaller sets, process all at once
+        const result = await rankCandidates({
+          jobDescription,
+          candidates: validCandidates,
+          jobDescriptionFile,
+          candidateFiles,
+          weightConfig,
         })
-      }
 
-      setResults(result)
+        // Validate the result
+        if (!result || !result.rankedCandidates || !Array.isArray(result.rankedCandidates)) {
+          throw new Error("Invalid response format from ranking service")
+        }
+
+        // If the result includes preprocessed stats, show them
+        if (result.preprocessStats) {
+          setPreprocessStats(result.preprocessStats)
+        } else {
+          // Estimate preprocessing stats based on typical reduction
+          setPreprocessStats({
+            original: originalTotalLength,
+            processed: Math.floor(originalTotalLength * 0.7), // Assume 30% reduction
+            percentReduction: 30,
+          })
+        }
+
+        setResults(result)
+      }
     } catch (error) {
       console.error("Error ranking candidates:", error)
       const errorMessage = error instanceof Error ? error.message : String(error)
@@ -470,7 +549,7 @@ export function ResumeRanker() {
       {/* Model Status Check */}
       <ModelStatus />
 
-      {error && (
+      {error && !error.startsWith("Processing") && (
         <div className="bg-red-50 border-l-4 border-red-400 p-4 mb-6">
           <div className="flex">
             <div className="flex-shrink-0">
@@ -488,6 +567,11 @@ export function ResumeRanker() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Show processing status for batch operations */}
+      {error && error.startsWith("Processing") && (
+        <ProcessingStatus message={error} isProcessing={isLoading || isBulkProcessing} />
       )}
 
       {preprocessStats && !isLoading && <PreprocessingStats stats={preprocessStats} />}

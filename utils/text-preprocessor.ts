@@ -4,9 +4,9 @@
  */
 
 // Maximum recommended length for a resume to send to the API
-const MAX_RESUME_LENGTH = 4000
+const MAX_RESUME_LENGTH = 6000 // Increased from 4000
 // Maximum recommended length for a job description to send to the API
-const MAX_JOB_DESCRIPTION_LENGTH = 2000
+const MAX_JOB_DESCRIPTION_LENGTH = 3000 // Increased from 2000
 
 /**
  * Preprocess text to remove redundancy and optimize for API usage
@@ -284,6 +284,14 @@ function smartTruncate(text: string, maxLength: number, type: "resume" | "jobDes
   // If already under max length, return as is
   if (text.length <= maxLength) {
     return text
+  }
+
+  // For very large texts, use a more aggressive approach
+  if (text.length > maxLength * 3) {
+    // For extremely large texts, just take the beginning and end
+    const firstPart = text.substring(0, Math.floor(maxLength * 0.7))
+    const lastPart = text.substring(text.length - Math.floor(maxLength * 0.3))
+    return `${firstPart}\n\n[...content truncated for processing...]\n\n${lastPart}`
   }
 
   // For resumes, prioritize skills and recent experience

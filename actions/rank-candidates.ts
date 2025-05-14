@@ -44,15 +44,16 @@ export async function rankCandidates({
   weightConfig,
 }: RankCandidatesProps): Promise<RankingResult> {
   try {
-    // Limit the number of candidates to prevent API overload
-    const MAX_CANDIDATES = 20
-    let processedCandidates = [...candidates]
+    // Limit the number of candidates per batch to prevent API overload
+    const MAX_CANDIDATES_PER_BATCH = 10
+    const processedCandidates = [...candidates]
 
-    // If we have too many candidates, cap them and note this in the results
+    // If we have too many candidates, note this in the results
     let candidatesLimited = false
-    if (processedCandidates.length > MAX_CANDIDATES) {
-      processedCandidates = processedCandidates.slice(0, MAX_CANDIDATES)
+    if (processedCandidates.length > MAX_CANDIDATES_PER_BATCH) {
+      // We'll process them in batches, but note this for the user
       candidatesLimited = true
+      console.log(`Processing ${processedCandidates.length} candidates in batches of ${MAX_CANDIDATES_PER_BATCH}`)
     }
 
     // Track original text lengths for stats
@@ -199,8 +200,10 @@ Respond ONLY with valid JSON in the exact format specified in the prompt. Do not
             name: "Note: Analysis Limited",
             score: 0,
             strengths: [""],
-            weaknesses: [`Only the first ${MAX_CANDIDATES} candidates were analyzed due to system limitations.`],
-            analysis: `For better performance, only the first ${MAX_CANDIDATES} candidates were analyzed. Please rank candidates in smaller batches for complete results.`,
+            weaknesses: [
+              `Only the first ${MAX_CANDIDATES_PER_BATCH} candidates were analyzed due to system limitations.`,
+            ],
+            analysis: `For better performance, only the first ${MAX_CANDIDATES_PER_BATCH} candidates were analyzed. Please rank candidates in smaller batches for complete results.`,
           }
 
           // Add the warning as a special item in the results
@@ -238,8 +241,10 @@ Respond ONLY with valid JSON in the exact format specified in the prompt. Do not
             name: "Note: Analysis Limited",
             score: 0,
             strengths: [""],
-            weaknesses: [`Only the first ${MAX_CANDIDATES} candidates were analyzed due to system limitations.`],
-            analysis: `For better performance, only the first ${MAX_CANDIDATES} candidates were analyzed. Please rank candidates in smaller batches for complete results.`,
+            weaknesses: [
+              `Only the first ${MAX_CANDIDATES_PER_BATCH} candidates were analyzed due to system limitations.`,
+            ],
+            analysis: `For better performance, only the first ${MAX_CANDIDATES_PER_BATCH} candidates were analyzed. Please rank candidates in smaller batches for complete results.`,
           }
 
           // Add the warning as a special item in the results
@@ -259,8 +264,34 @@ Respond ONLY with valid JSON in the exact format specified in the prompt. Do not
     }
   } catch (error) {
     console.error("Error in rankCandidates:", error)
-    // Always return a valid result, even if there's an error
-    return generateMockRanking(candidates, jobDescription, weightConfig)
+
+    // Provide more detailed error information
+    let errorMessage = "Unknown error occurred during ranking"
+    if (error instanceof Error) {
+      errorMessage = error.message
+
+      // Check for specific error types
+      if (error.message.includes("memory") || error.message.includes("heap")) {
+        errorMessage = "Memory limit exceeded. Try processing fewer candidates at once or use smaller files."
+      } else if (error.message.includes("timeout") || error.message.includes("timed out")) {
+        errorMessage = "Request timed out. Try processing fewer candidates at once."
+      } else if (error.message.includes("rate limit") || error.message.includes("too many requests")) {
+        errorMessage = "API rate limit exceeded. Please wait a moment and try again."
+      }
+    }
+
+    // Always return a valid result with error information, even if there's an error
+    return {
+      rankedCandidates: [
+        {
+          name: "Error Processing Candidates",
+          score: 0,
+          strengths: [],
+          weaknesses: [`Error: ${errorMessage}`],
+          analysis: `An error occurred while ranking candidates: ${errorMessage}. Please try again with fewer candidates or smaller files.`,
+        },
+      ],
+    }
   }
 }
 

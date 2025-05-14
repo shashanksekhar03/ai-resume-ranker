@@ -1,12 +1,20 @@
+"use client"
+
+import { useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import type { RankingResult, RankedCandidate } from "@/types/resume-ranker"
 import { Progress } from "@/components/ui/progress"
+import { Button } from "@/components/ui/button"
+import { ChevronLeft, ChevronRight } from "lucide-react"
 
 interface RankingResultsProps {
   results: RankingResult
 }
 
 export function RankingResults({ results }: RankingResultsProps) {
+  const [currentPage, setCurrentPage] = useState(1)
+  const candidatesPerPage = 5
+
   // Validate results
   if (
     !results ||
@@ -22,15 +30,66 @@ export function RankingResults({ results }: RankingResultsProps) {
     )
   }
 
+  // Calculate pagination
+  const totalCandidates = results.rankedCandidates.length
+  const totalPages = Math.ceil(totalCandidates / candidatesPerPage)
+
+  // Get current page candidates
+  const indexOfLastCandidate = currentPage * candidatesPerPage
+  const indexOfFirstCandidate = indexOfLastCandidate - candidatesPerPage
+  const currentCandidates = results.rankedCandidates.slice(indexOfFirstCandidate, indexOfLastCandidate)
+
+  // Change page
+  const paginate = (pageNumber: number) => setCurrentPage(pageNumber)
+  const nextPage = () => setCurrentPage((prev) => Math.min(prev + 1, totalPages))
+  const prevPage = () => setCurrentPage((prev) => Math.max(prev - 1, 1))
+
   return (
     <div className="space-y-6">
-      <h2 className="text-2xl font-bold text-center">Ranking Results</h2>
+      <div className="flex justify-between items-center">
+        <h2 className="text-2xl font-bold">Ranking Results</h2>
+        {totalCandidates > candidatesPerPage && (
+          <div className="text-sm text-gray-500">
+            Showing {indexOfFirstCandidate + 1}-{Math.min(indexOfLastCandidate, totalCandidates)} of {totalCandidates}{" "}
+            candidates
+          </div>
+        )}
+      </div>
 
       <div className="space-y-4">
-        {results.rankedCandidates.map((candidate, index) => (
-          <CandidateCard key={index} candidate={candidate} rank={index + 1} />
+        {currentCandidates.map((candidate, index) => (
+          <CandidateCard key={index} candidate={candidate} rank={indexOfFirstCandidate + index + 1} />
         ))}
       </div>
+
+      {/* Pagination controls */}
+      {totalPages > 1 && (
+        <div className="flex justify-center items-center space-x-2 mt-6">
+          <Button variant="outline" size="sm" onClick={prevPage} disabled={currentPage === 1}>
+            <ChevronLeft className="h-4 w-4 mr-1" />
+            Previous
+          </Button>
+
+          <div className="flex items-center space-x-1">
+            {Array.from({ length: totalPages }, (_, i) => i + 1).map((number) => (
+              <Button
+                key={number}
+                variant={currentPage === number ? "default" : "outline"}
+                size="sm"
+                className="w-8 h-8 p-0"
+                onClick={() => paginate(number)}
+              >
+                {number}
+              </Button>
+            ))}
+          </div>
+
+          <Button variant="outline" size="sm" onClick={nextPage} disabled={currentPage === totalPages}>
+            Next
+            <ChevronRight className="h-4 w-4 ml-1" />
+          </Button>
+        </div>
+      )}
     </div>
   )
 }

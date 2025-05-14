@@ -17,7 +17,7 @@ export async function parseDocument(file: File): Promise<string> {
     const fileName = file.name.toLowerCase()
     const fileType = file.type
 
-    // Handle different file types
+    // Handle different file types with memory optimization
     if (fileName.endsWith(".pdf") || fileType === "application/pdf") {
       return await extractTextFromPdf(file)
     } else if (
@@ -26,8 +26,6 @@ export async function parseDocument(file: File): Promise<string> {
     ) {
       return await extractTextFromDocx(file)
     } else if (fileName.endsWith(".doc") || fileType === "application/msword") {
-      // For .doc files, we'll use a simple text extraction as a fallback
-      // In a production app, you'd want a more robust solution
       return await extractTextFromDoc(file)
     } else {
       throw new Error("Unsupported file format. Please upload a PDF, DOC, or DOCX file.")
@@ -56,21 +54,49 @@ export async function parseDocument(file: File): Promise<string> {
  */
 async function extractTextFromPdf(file: File): Promise<string> {
   try {
-    // Convert File to ArrayBuffer
+    // For large PDFs, we'll read the file in chunks to avoid memory issues
+    const MAX_CHUNK_SIZE = 5 * 1024 * 1024 // 5MB chunks
+
+    if (file.size > MAX_CHUNK_SIZE) {
+      // For large files, use a simpler extraction approach
+      // that prioritizes memory efficiency over completeness
+      return await extractLargePdfText(file)
+    }
+
+    // For smaller files, use the normal approach
     const arrayBuffer = await file.arrayBuffer()
-
-    // In a browser environment, we need to use a client-side PDF parser
-    // For simplicity, we'll use a basic approach that works in the browser
-    // In a production app, you'd want to use a more robust solution like pdf.js
-
-    // This is a placeholder for PDF parsing logic
-    // In a real app, you'd use a proper PDF parsing library
     const text = await extractTextFromPdfUsingFetch(arrayBuffer)
-
     return cleanExtractedText(text)
   } catch (error) {
     console.error("Error extracting text from PDF:", error)
     throw new Error("Failed to extract text from PDF. Please try again or use text input.")
+  }
+}
+
+// Add a new function for handling large PDFs
+// Add this function after the extractTextFromPdf function:
+
+async function extractLargePdfText(file: File): Promise<string> {
+  try {
+    // For large PDFs, we'll extract text in a more memory-efficient way
+    // This is a simplified approach that may not extract all text perfectly
+    // but will avoid memory issues with large files
+
+    // Read the first 2MB of the file to extract metadata and initial text
+    const chunk = file.slice(0, 2 * 1024 * 1024)
+    const buffer = await chunk.arrayBuffer()
+
+    // Extract what we can from this chunk
+    const text = await extractTextFromPdfUsingFetch(buffer)
+
+    // Add a note that this is a partial extraction for very large files
+    const fileSize = (file.size / (1024 * 1024)).toFixed(1)
+    const note = `\n\n[Note: This is a partial extraction of a large PDF (${fileSize}MB). For best results with large files, consider copying and pasting the most relevant sections manually.]`
+
+    return cleanExtractedText(text) + note
+  } catch (error) {
+    console.error("Error extracting text from large PDF:", error)
+    return "Error extracting text from large PDF. Please try using a smaller file or enter the text manually."
   }
 }
 
