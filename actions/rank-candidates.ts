@@ -56,12 +56,12 @@ export async function rankCandidates({
     }
 
     // Track original text lengths for stats
-    const originalJobDescLength = jobDescription.length
+    const originalJobDescLength = jobDescription?.length || 0
     const originalCandidatesLength = processedCandidates.reduce((total, c) => total + (c.resume?.length || 0), 0)
     const originalTotalLength = originalJobDescLength + originalCandidatesLength
 
     // Process job description file if provided
-    let finalJobDescription = jobDescription
+    let finalJobDescription = jobDescription || ""
     if (jobDescriptionFile) {
       try {
         // Extract text from the file using our improved document parser
@@ -80,7 +80,6 @@ export async function rankCandidates({
     finalJobDescription = processedJobDescription
 
     // Process candidate resume files if provided
-
     if (candidateFiles) {
       for (const [id, file] of Object.entries(candidateFiles)) {
         if (file) {
@@ -119,7 +118,7 @@ export async function rankCandidates({
         processedCandidates[i].resume = preprocessText(filteredResume, "resume")
 
         // If candidate doesn't have a name, try to detect it from the original resume
-        if (!processedCandidates[i].name.trim()) {
+        if (!processedCandidates[i].name?.trim()) {
           // First try to detect from the resume
           const { name, confidence } = detectNameFromResume(processedCandidates[i].resume)
 
@@ -149,7 +148,10 @@ export async function rankCandidates({
     const processedTotalLength = processedJobDescLength + processedCandidatesLength
 
     // Calculate percentage reduction
-    const percentReduction = Math.round(((originalTotalLength - processedTotalLength) / originalTotalLength) * 100)
+    const percentReduction =
+      originalTotalLength > 0
+        ? Math.round(((originalTotalLength - processedTotalLength) / originalTotalLength) * 100)
+        : 0
 
     // Create preprocessing stats
     const preprocessStats = {
@@ -165,7 +167,7 @@ export async function rankCandidates({
     }
 
     // Filter out candidates with empty resumes
-    const validCandidates = processedCandidates.filter((c) => c.resume.trim())
+    const validCandidates = processedCandidates.filter((c) => c.resume?.trim())
 
     if (validCandidates.length === 0) {
       console.warn("No valid candidates with resumes, using fallback ranking")
@@ -189,6 +191,10 @@ export async function rankCandidates({
 Your task is to analyze each candidate's resume against the job description and provide a detailed ranking.
 Respond ONLY with valid JSON in the exact format specified in the prompt. Do not include markdown formatting, code blocks, or any text outside the JSON object.`,
         })
+
+        if (!response || !response.text) {
+          throw new Error("Empty response from AI service")
+        }
 
         // Process the response
         const result = processAIResponse(response.text, validCandidates, finalJobDescription, weightConfig)
@@ -228,6 +234,10 @@ Respond ONLY with valid JSON in the exact format specified in the prompt. Do not
 Your task is to analyze each candidate's resume against the job description and provide a detailed ranking.
 Respond ONLY with valid JSON in the exact format specified in the prompt. Do not include markdown formatting, code blocks, or any text outside the JSON object.`,
         })
+
+        if (!response || !response.text) {
+          throw new Error("Empty response from fallback AI service")
+        }
 
         // Process the response
         const result = processAIResponse(response.text, validCandidates, finalJobDescription, weightConfig)
@@ -272,36 +282,46 @@ function processAIResponse(
   weightConfig?: WeightConfig,
 ): RankingResult {
   try {
+    if (!responseText || typeof responseText !== "string") {
+      console.error("Invalid response from AI: empty or not a string")
+      return generateMockRanking(validCandidates, jobDescription, weightConfig)
+    }
+
     // Clean the response text to handle markdown formatting
     const cleanedText = extractJsonFromResponse(responseText)
     console.log("Cleaned response text:", cleanedText.substring(0, 200) + "...")
 
-    const result = JSON.parse(cleanedText) as RankingResult
+    try {
+      const result = JSON.parse(cleanedText) as RankingResult
 
-    // Validate the result structure
-    if (!result.rankedCandidates || !Array.isArray(result.rankedCandidates) || result.rankedCandidates.length === 0) {
-      console.error("Invalid response structure from AI", cleanedText)
+      // Validate the result structure
+      if (!result.rankedCandidates || !Array.isArray(result.rankedCandidates) || result.rankedCandidates.length === 0) {
+        console.error("Invalid response structure from AI", cleanedText)
+        return generateMockRanking(validCandidates, jobDescription, weightConfig)
+      }
+
+      // Ensure all candidates have the required fields
+      const validatedCandidates = result.rankedCandidates.map((candidate) => {
+        return {
+          name: candidate.name || "Unknown Candidate",
+          score: typeof candidate.score === "number" ? candidate.score : 50,
+          strengths: Array.isArray(candidate.strengths) ? candidate.strengths : ["Has relevant experience"],
+          weaknesses: Array.isArray(candidate.weaknesses) ? candidate.weaknesses : [],
+          analysis: candidate.analysis || "This candidate has been evaluated based on their resume.",
+          categoryScores: candidate.categoryScores || generateDefaultCategoryScores(),
+        }
+      })
+
+      // Sort candidates by score in descending order
+      validatedCandidates.sort((a, b) => b.score - a.score)
+
+      return { rankedCandidates: validatedCandidates }
+    } catch (parseError) {
+      console.error("Error parsing AI response:", parseError, "Response:", responseText)
       return generateMockRanking(validCandidates, jobDescription, weightConfig)
     }
-
-    // Ensure all candidates have the required fields
-    const validatedCandidates = result.rankedCandidates.map((candidate) => {
-      return {
-        name: candidate.name || "Unknown Candidate",
-        score: typeof candidate.score === "number" ? candidate.score : 50,
-        strengths: Array.isArray(candidate.strengths) ? candidate.strengths : ["Has relevant experience"],
-        weaknesses: Array.isArray(candidate.weaknesses) ? candidate.weaknesses : [],
-        analysis: candidate.analysis || "This candidate has been evaluated based on their resume.",
-        categoryScores: candidate.categoryScores || generateDefaultCategoryScores(),
-      }
-    })
-
-    // Sort candidates by score in descending order
-    validatedCandidates.sort((a, b) => b.score - a.score)
-
-    return { rankedCandidates: validatedCandidates }
-  } catch (parseError) {
-    console.error("Error parsing AI response:", parseError, "Response:", responseText)
+  } catch (error) {
+    console.error("Error processing AI response:", error)
     return generateMockRanking(validCandidates, jobDescription, weightConfig)
   }
 }
@@ -345,9 +365,9 @@ Candidates:
 ${candidates
   .map(
     (c) => `
-Name: ${c.name}
+Name: ${c.name || "Unnamed Candidate"}
 Resume:
-${c.resume}
+${c.resume || "No resume provided"}
 `,
   )
   .join("\n---\n")}
@@ -437,14 +457,14 @@ function generateMockRanking(
   }
 
   // Simple keyword matching algorithm
-  const keywordsFromJob = extractKeywords(jobDescription)
+  const keywordsFromJob = extractKeywords(jobDescription || "")
 
   // Get weights for different categories
   const weights = getWeightsFromConfig(weightConfig)
 
   const rankedCandidates = candidates.map((candidate, index) => {
     // Ensure candidate has valid data
-    const name = candidate.name.trim() || `Candidate ${index + 1}`
+    const name = candidate.name?.trim() || `Candidate ${index + 1}`
     const resumeText = (candidate.resume || "").toLowerCase()
 
     // Count matching keywords
@@ -518,9 +538,9 @@ function generateMockRanking(
   return {
     rankedCandidates,
     preprocessStats: preprocessStats || {
-      original: jobDescription.length + candidates.reduce((total, c) => total + (c.resume?.length || 0), 0),
+      original: (jobDescription?.length || 0) + candidates.reduce((total, c) => total + (c.resume?.length || 0), 0),
       processed: Math.floor(
-        (jobDescription.length + candidates.reduce((total, c) => total + (c.resume?.length || 0), 0)) * 0.7,
+        ((jobDescription?.length || 0) + candidates.reduce((total, c) => total + (c.resume?.length || 0), 0)) * 0.7,
       ),
       percentReduction: 30,
     },

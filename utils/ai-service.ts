@@ -57,7 +57,7 @@ export async function generateText(options: GenerateTextOptions): Promise<Genera
     })
 
     if (!response.ok) {
-      const errorData = await response.json()
+      const errorData = await response.json().catch(() => ({ error: { message: "Failed to parse error response" } }))
       console.error("OpenAI API error:", errorData)
 
       // If we're using the preferred model and get an error, try the fallback model
@@ -69,7 +69,14 @@ export async function generateText(options: GenerateTextOptions): Promise<Genera
       throw new Error(`OpenAI API error: ${errorData.error?.message || "Unknown error"}`)
     }
 
-    const data = await response.json()
+    const data = await response.json().catch(() => {
+      throw new Error("Failed to parse JSON response from OpenAI API")
+    })
+
+    if (!data || !data.choices || !data.choices[0] || !data.choices[0].message) {
+      throw new Error("Invalid response format from OpenAI API")
+    }
+
     return {
       text: data.choices[0]?.message?.content || "",
       usedFallback: modelName !== MODEL,
@@ -119,12 +126,19 @@ async function generateTextWithFallbackModel(options: GenerateTextOptions): Prom
     })
 
     if (!response.ok) {
-      const errorData = await response.json()
+      const errorData = await response.json().catch(() => ({ error: { message: "Failed to parse error response" } }))
       console.error("Fallback model API error:", errorData)
       throw new Error(`Fallback model API error: ${errorData.error?.message || "Unknown error"}`)
     }
 
-    const data = await response.json()
+    const data = await response.json().catch(() => {
+      throw new Error("Failed to parse JSON response from fallback model")
+    })
+
+    if (!data || !data.choices || !data.choices[0] || !data.choices[0].message) {
+      throw new Error("Invalid response format from fallback model")
+    }
+
     return {
       text: data.choices[0]?.message?.content || "",
       usedFallback: true,
