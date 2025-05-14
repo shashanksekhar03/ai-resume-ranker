@@ -15,6 +15,11 @@ export interface RankedCandidate {
 
 export interface RankingResult {
   rankedCandidates: RankedCandidate[]
+  preprocessStats?: {
+    original: number
+    processed: number
+    percentReduction: number
+  }
 }
 
 export interface FileUploadProps {
@@ -38,3 +43,5 @@ export interface WeightConfig {
   categories: WeightCategory[]
   useCustomWeights: boolean
 }
+
+export type FileProcessingStatus = "processing" | "success" | "error" | null

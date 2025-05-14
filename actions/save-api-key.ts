@@ -1,8 +1,7 @@
 "use server"
 
 import { cookies } from "next/headers"
-import { generateText } from "ai"
-import { openai } from "@ai-sdk/openai"
+import { generateText, openai } from "@/utils/ai-service"
 
 interface SaveApiKeyResult {
   success: boolean

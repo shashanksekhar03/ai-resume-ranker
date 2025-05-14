@@ -1,9 +1,8 @@
 "use server"
 
-import { generateText } from "ai"
-import { openai } from "@ai-sdk/openai"
 import type { WeightCategory } from "@/types/resume-ranker"
 import { MODEL, FALLBACK_MODEL, OPENAI_API_KEY } from "@/lib/ai-config"
+import { generateText, openai } from "@/utils/ai-service"
 
 // Helper function to clean AI response text and extract JSON
 function extractJsonFromResponse(text: string): string {
@@ -131,22 +130,113 @@ function processWeightsResponse(responseText: string): WeightCategory[] {
       return getDefaultWeights()
     }
 
-    return validWeights
+    // Convert the raw weights to our WeightCategory format
+    return validWeights.map((weight) => {
+      const categoryName = getCategoryName(weight.id)
+      const categoryDescription = getCategoryDescription(weight.id)
+
+      return {
+        id: weight.id,
+        name: categoryName,
+        description: categoryDescription,
+        weight: weight.weight,
+        defaultWeight: weight.weight,
+        aiSuggested: true,
+      }
+    })
   } catch (parseError) {
     console.error("Error parsing AI response:", parseError, "Response:", responseText)
     return getDefaultWeights()
   }
 }
 
+// Helper function to get category name from ID
+function getCategoryName(id: string): string {
+  const categoryNames: Record<string, string> = {
+    technical_skills: "Technical Skills",
+    experience: "Experience",
+    education: "Education",
+    location: "Location",
+    soft_skills: "Soft Skills",
+    industry_knowledge: "Industry Knowledge",
+    certifications: "Certifications",
+  }
+
+  return (
+    categoryNames[id] ||
+    id
+      .split("_")
+      .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+      .join(" ")
+  )
+}
+
+// Helper function to get category description from ID
+function getCategoryDescription(id: string): string {
+  const categoryDescriptions: Record<string, string> = {
+    technical_skills: "Programming languages, tools, and technologies",
+    experience: "Years of relevant work experience",
+    education: "Degrees, certifications, and academic achievements",
+    location: "Proximity to job location or willingness to relocate",
+    soft_skills: "Communication, teamwork, and interpersonal abilities",
+    industry_knowledge: "Familiarity with the specific industry and domain",
+    certifications: "Professional certifications and licenses",
+  }
+
+  return categoryDescriptions[id] || ""
+}
+
 // Function to provide default weights when API is unavailable
 function getDefaultWeights(): WeightCategory[] {
   return [
-    { id: "technical_skills", weight: 7 },
-    { id: "experience", weight: 6 },
-    { id: "education", weight: 5 },
-    { id: "location", weight: 3 },
-    { id: "soft_skills", weight: 4 },
-    { id: "industry_knowledge", weight: 5 },
-    { id: "certifications", weight: 3 },
+    {
+      id: "technical_skills",
+      name: "Technical Skills",
+      description: "Programming languages, tools, and technologies",
+      weight: 7,
+      defaultWeight: 7,
+    },
+    {
+      id: "experience",
+      name: "Experience",
+      description: "Years of relevant work experience",
+      weight: 6,
+      defaultWeight: 6,
+    },
+    {
+      id: "education",
+      name: "Education",
+      description: "Degrees, certifications, and academic achievements",
+      weight: 5,
+      defaultWeight: 5,
+    },
+    {
+      id: "location",
+      name: "Location",
+      description: "Proximity to job location or willingness to relocate",
+      weight: 3,
+      defaultWeight: 3,
+    },
+    {
+      id: "soft_skills",
+      name: "Soft Skills",
+      description: "Communication, teamwork, and interpersonal abilities",
+      weight: 4,
+      defaultWeight: 4,
+    },
+    {
+      id: "industry_knowledge",
+      name: "Industry Knowledge",
+      description: "Familiarity with the specific industry and domain",
+      weight: 5,
+      defaultWeight: 5,
+    },
+    {
+      id: "certifications",
+      name: "Certifications",
+      description: "Professional certifications and licenses",
+      weight: 3,
+      defaultWeight: 3,
+    },
   ]
 }

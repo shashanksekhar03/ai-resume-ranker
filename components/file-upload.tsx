@@ -5,11 +5,12 @@ import type React from "react"
 import { useState, useRef } from "react"
 import { Button } from "@/components/ui/button"
 import type { FileUploadProps } from "@/types/resume-ranker"
-import { FileIcon, UploadIcon, XIcon } from "lucide-react"
+import { FileIcon, UploadIcon, XIcon, Loader2 } from "lucide-react"
 
 export function FileUpload({ id, label, accept = ".pdf,.doc,.docx", onChange, currentFile }: FileUploadProps) {
   const [isDragging, setIsDragging] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const [isProcessing, setIsProcessing] = useState(false)
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault()
@@ -20,7 +21,7 @@ export function FileUpload({ id, label, accept = ".pdf,.doc,.docx", onChange, cu
     setIsDragging(false)
   }
 
-  const handleDrop = (e: React.DragEvent) => {
+  const handleDrop = async (e: React.DragEvent) => {
     e.preventDefault()
     setIsDragging(false)
 
@@ -38,16 +39,34 @@ export function FileUpload({ id, label, accept = ".pdf,.doc,.docx", onChange, cu
         fileName.endsWith(".doc") ||
         fileName.endsWith(".docx")
       ) {
-        onChange(file)
+        setIsProcessing(true)
+        try {
+          // Pass the file to the parent component
+          onChange(file)
+        } catch (error) {
+          console.error("Error processing file:", error)
+          alert(`Error processing file: ${error instanceof Error ? error.message : "Unknown error"}`)
+        } finally {
+          setIsProcessing(false)
+        }
       } else {
         alert("Please upload a PDF, DOC, or DOCX file")
       }
     }
   }
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
-      onChange(e.target.files[0])
+      setIsProcessing(true)
+      try {
+        // Pass the file to the parent component
+        onChange(e.target.files[0])
+      } catch (error) {
+        console.error("Error processing file:", error)
+        alert(`Error processing file: ${error instanceof Error ? error.message : "Unknown error"}`)
+      } finally {
+        setIsProcessing(false)
+      }
     }
   }
 
@@ -85,11 +104,20 @@ export function FileUpload({ id, label, accept = ".pdf,.doc,.docx", onChange, cu
           onDrop={handleDrop}
           onClick={() => fileInputRef.current?.click()}
         >
-          <UploadIcon className="mx-auto h-6 w-6 text-gray-400 mb-2" />
-          <p className="text-sm text-gray-500">
-            Drag and drop a file, or <span className="text-primary font-medium">click to browse</span>
-          </p>
-          <p className="text-xs text-gray-400 mt-1">Supports PDF, DOC, and DOCX files</p>
+          {isProcessing ? (
+            <>
+              <Loader2 className="mx-auto h-6 w-6 text-primary animate-spin mb-2" />
+              <p className="text-sm text-gray-500">Processing file...</p>
+            </>
+          ) : (
+            <>
+              <UploadIcon className="mx-auto h-6 w-6 text-gray-400 mb-2" />
+              <p className="text-sm text-gray-500">
+                Drag and drop a file, or <span className="text-primary font-medium">click to browse</span>
+              </p>
+              <p className="text-xs text-gray-400 mt-1">Supports PDF, DOC, and DOCX files</p>
+            </>
+          )}
           <input
             id={id}
             type="file"
@@ -97,6 +125,7 @@ export function FileUpload({ id, label, accept = ".pdf,.doc,.docx", onChange, cu
             className="hidden"
             accept={accept}
             onChange={handleFileChange}
+            disabled={isProcessing}
           />
         </div>
       ) : (

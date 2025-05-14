@@ -1,51 +1,76 @@
 "use server"
 
-import { generateText } from "ai"
-import { openai } from "@ai-sdk/openai"
 import { MODEL, FALLBACK_MODEL, OPENAI_API_KEY } from "@/lib/ai-config"
+import { generateText, openai } from "@/utils/ai-service"
 
 interface ModelAccessResult {
   success: boolean
   model?: string
   error?: string
+  details?: string
 }
 
 export async function checkModelAccess(): Promise<ModelAccessResult> {
   try {
-    // Try to use the model with the AI SDK
+    console.log("Checking model access...")
+
+    // Try to use the model with our fallback service
     try {
-      const { text } = await generateText({
+      console.log(`Testing access to ${FALLBACK_MODEL}...`)
+      const { text, usedFallback } = await generateText({
         model: openai(FALLBACK_MODEL, {
           apiKey: OPENAI_API_KEY,
         }),
         prompt: "Respond with 'OK' if you can read this message.",
+        temperature: 0.1,
+        maxTokens: 10,
       })
+
+      console.log(`Response from ${FALLBACK_MODEL}: "${text}"`)
 
       if (text.toLowerCase().includes("ok")) {
         // If basic model works, try the advanced model
         try {
-          await generateText({
+          console.log(`Testing access to ${MODEL}...`)
+          const advancedResponse = await generateText({
             model: openai(MODEL, {
               apiKey: OPENAI_API_KEY,
             }),
-            prompt: "Test",
+            prompt: "Respond with 'OK' if you can read this message.",
+            temperature: 0.1,
+            maxTokens: 10,
           })
 
-          return {
-            success: true,
-            model: MODEL,
+          console.log(`Response from ${MODEL}: "${advancedResponse.text}"`)
+
+          if (advancedResponse.text.toLowerCase().includes("ok")) {
+            return {
+              success: true,
+              model: MODEL,
+              details: `Successfully connected to ${MODEL}`,
+            }
+          } else {
+            return {
+              success: false,
+              model: FALLBACK_MODEL,
+              error: `Your API key works, but ${MODEL} returned an unexpected response. Using ${FALLBACK_MODEL} instead.`,
+              details: `Response: "${advancedResponse.text}"`,
+            }
           }
         } catch (advancedModelError) {
           console.error("Error accessing advanced model:", advancedModelError)
           return {
             success: false,
-            error: `Your API key works, but doesn't have access to ${MODEL}. Using fallback model instead.`,
+            model: FALLBACK_MODEL,
+            error: `Your API key works, but doesn't have access to ${MODEL}. Using ${FALLBACK_MODEL} instead.`,
+            details: advancedModelError instanceof Error ? advancedModelError.message : String(advancedModelError),
           }
         }
       } else {
         return {
           success: false,
-          error: "Unexpected response from model",
+          error: `Unexpected response from ${FALLBACK_MODEL}`,
+          details: `Response: "${text}"`,
         }
       }
     } catch (modelError: any) {
@@ -64,6 +89,7 @@ export async function checkModelAccess(): Promise<ModelAccessResult> {
       return {
         success: false,
         error: `Error using model: ${errorMessage}`,
+        details: JSON.stringify(modelError),
       }
     }
   } catch (error) {
@@ -73,6 +99,7 @@ export async function checkModelAccess(): Promise<ModelAccessResult> {
     return {
       success: false,
       error: errorMessage,
+      details: "An unexpected error occurred while checking model access.",
     }
   }
 }

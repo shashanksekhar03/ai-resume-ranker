@@ -1,9 +1,16 @@
 "use server"
 
-import { generateText } from "ai"
-import { openai } from "@ai-sdk/openai"
 import type { Candidate, RankingResult, WeightConfig } from "@/types/resume-ranker"
 import { MODEL, FALLBACK_MODEL, OPENAI_API_KEY } from "@/lib/ai-config"
+
+// Import the text preprocessor
+import { preprocessText } from "@/utils/text-preprocessor"
+import { parseDocument } from "@/utils/document-parser"
+import { detectNameFromResume, extractEmail, generateNameFromEmail } from "@/utils/name-detector"
+import { filterContactInfo } from "@/utils/contact-filter"
+
+// Import our fallback AI service
+import { generateText, openai } from "@/utils/ai-service"
 
 interface RankCandidatesProps {
   jobDescription: string
@@ -28,6 +35,7 @@ function extractJsonFromResponse(text: string): string {
   return text.trim()
 }
 
+// Update the rankCandidates function to use text preprocessing
 export async function rankCandidates({
   jobDescription,
   candidates,
@@ -36,12 +44,17 @@ export async function rankCandidates({
   weightConfig,
 }: RankCandidatesProps): Promise<RankingResult> {
   try {
+    // Track original text lengths for stats
+    const originalJobDescLength = jobDescription.length
+    const originalCandidatesLength = candidates.reduce((total, c) => total + (c.resume?.length || 0), 0)
+    const originalTotalLength = originalJobDescLength + originalCandidatesLength
+
     // Process job description file if provided
     let finalJobDescription = jobDescription
     if (jobDescriptionFile) {
       try {
-        // Extract text from the file
-        const text = await extractTextFromFile(jobDescriptionFile)
+        // Extract text from the file using our improved document parser
+        const text = await parseDocument(jobDescriptionFile)
         if (text && text.trim()) {
           finalJobDescription = text
         }
@@ -51,6 +64,10 @@ export async function rankCandidates({
       }
     }
 
+    // Preprocess the job description to optimize for API usage
+    const processedJobDescription = preprocessText(finalJobDescription, "jobDescription")
+    finalJobDescription = processedJobDescription
+
     // Process candidate resume files if provided
     const processedCandidates = [...candidates]
 
@@ -58,8 +75,8 @@ export async function rankCandidates({
       for (const [id, file] of Object.entries(candidateFiles)) {
         if (file) {
           try {
-            // Extract text from the file
-            const text = await extractTextFromFile(file)
+            // Extract text from the file using our improved document parser
+            const text = await parseDocument(file)
 
             if (text && text.trim()) {
               // Find and update the corresponding candidate
@@ -79,18 +96,70 @@ export async function rankCandidates({
       }
     }
 
+    // Preprocess each candidate's resume, ensure they have names, and filter contact info
+    for (let i = 0; i < processedCandidates.length; i++) {
+      if (processedCandidates[i].resume) {
+        // Extract email before filtering (for name generation if needed)
+        const email = extractEmail(processedCandidates[i].resume)
+
+        // Filter out contact information before preprocessing
+        const filteredResume = filterContactInfo(processedCandidates[i].resume)
+
+        // Preprocess the resume text
+        processedCandidates[i].resume = preprocessText(filteredResume, "resume")
+
+        // If candidate doesn't have a name, try to detect it from the original resume
+        if (!processedCandidates[i].name.trim()) {
+          // First try to detect from the resume
+          const { name, confidence } = detectNameFromResume(processedCandidates[i].resume)
+
+          if (name && confidence > 0.4) {
+            processedCandidates[i].name = name
+          }
+          // If no name detected but we have an email, generate from email
+          else if (email) {
+            const generatedName = generateNameFromEmail(email)
+            if (generatedName) {
+              processedCandidates[i].name = generatedName
+            } else {
+              // Last resort - use generic name
+              processedCandidates[i].name = `Candidate ${i + 1}`
+            }
+          } else {
+            // If we still can't detect a name, use a generic one
+            processedCandidates[i].name = `Candidate ${i + 1}`
+          }
+        }
+      }
+    }
+
+    // Calculate processed text lengths for stats
+    const processedJobDescLength = finalJobDescription.length
+    const processedCandidatesLength = processedCandidates.reduce((total, c) => total + (c.resume?.length || 0), 0)
+    const processedTotalLength = processedJobDescLength + processedCandidatesLength
+
+    // Calculate percentage reduction
+    const percentReduction = Math.round(((originalTotalLength - processedTotalLength) / originalTotalLength) * 100)
+
+    // Create preprocessing stats
+    const preprocessStats = {
+      original: originalTotalLength,
+      processed: processedTotalLength,
+      percentReduction,
+    }
+
     // Validate input data before proceeding
     if (!finalJobDescription.trim()) {
       console.warn("Empty job description, using fallback ranking")
-      return generateMockRanking(processedCandidates, "Generic Job Description", weightConfig)
+      return generateMockRanking(processedCandidates, "Generic Job Description", weightConfig, preprocessStats)
     }
 
     // Filter out candidates with empty resumes
-    const validCandidates = processedCandidates.filter((c) => c.name.trim() && c.resume.trim())
+    const validCandidates = processedCandidates.filter((c) => c.resume.trim())
 
     if (validCandidates.length === 0) {
       console.warn("No valid candidates with resumes, using fallback ranking")
-      return generateMockRanking(processedCandidates, finalJobDescription, weightConfig)
+      return generateMockRanking(processedCandidates, finalJobDescription, weightConfig, preprocessStats)
     }
 
     // Create a prompt for the AI to analyze and rank the candidates
@@ -112,7 +181,11 @@ Respond ONLY with valid JSON in the exact format specified in the prompt. Do not
         })
 
         // Process the response
-        return processAIResponse(response.text, validCandidates, finalJobDescription, weightConfig)
+        const result = processAIResponse(response.text, validCandidates, finalJobDescription, weightConfig)
+        return {
+          ...result,
+          preprocessStats,
+        }
       } catch (preferredModelError) {
         console.error("Error with preferred model, trying fallback model:", preferredModelError)
 
@@ -130,11 +203,15 @@ Respond ONLY with valid JSON in the exact format specified in the prompt. Do not
         })
 
         // Process the response
-        return processAIResponse(response.text, validCandidates, finalJobDescription, weightConfig)
+        const result = processAIResponse(response.text, validCandidates, finalJobDescription, weightConfig)
+        return {
+          ...result,
+          preprocessStats,
+        }
       }
     } catch (apiError) {
       console.error("OpenAI API Error:", apiError)
-      return generateMockRanking(validCandidates, finalJobDescription, weightConfig)
+      return generateMockRanking(validCandidates, finalJobDescription, weightConfig, preprocessStats)
     }
   } catch (error) {
     console.error("Error in rankCandidates:", error)
@@ -185,27 +262,6 @@ function processAIResponse(
   }
 }
 
-// Simple function to extract text from document files
-async function extractTextFromFile(file: File): Promise<string> {
-  try {
-    const fileName = file.name.toLowerCase()
-
-    // For simplicity in the browser environment, we'll use a basic approach
-    // In a production app, you would use proper document parsing libraries on the server
-
-    if (fileName.endsWith(".pdf")) {
-      return "PDF text extraction is currently simplified. For best results, copy-paste the text."
-    } else if (fileName.endsWith(".doc") || fileName.endsWith(".docx")) {
-      return "Word document text extraction is currently simplified. For best results, copy-paste the text."
-    } else {
-      return "Unsupported file format. Please use PDF, DOC, or DOCX files, or paste the text directly."
-    }
-  } catch (error) {
-    console.error("Document extraction error:", error)
-    return ""
-  }
-}
-
 function createRankingPrompt(jobDescription: string, candidates: Candidate[], weightConfig?: WeightConfig): string {
   // Format the weight configuration for the prompt
   let weightInstructions = ""
@@ -242,14 +298,24 @@ ${c.resume}
   )
   .join("\n---\n")}
 
+IMPORTANT: The job description and resumes have been preprocessed to include only the most relevant information.
+Personal contact information has been removed for privacy.
 Analyze each candidate's resume against the job description. Rank them based on how well they match the requirements.
 
 For each candidate, provide:
-1. A match score (0-100)
-2. 3-5 key strengths relevant to the job
-3. 1-3 areas for improvement or missing skills (if any)
-4. A brief analysis explaining the ranking (2-3 sentences)
+1. A match score (0-100) based on how well their qualifications match the job requirements
+2. 3-5 SPECIFIC key strengths relevant to the job (mention actual skills, experiences, or qualifications from their resume)
+3. 1-3 SPECIFIC areas for improvement or missing skills (mention actual requirements from the job description that they lack)
+4. A brief analysis explaining the ranking (2-3 sentences) that references SPECIFIC aspects of their background
 5. Category scores showing how well they match in each category (technical skills, experience, education, etc.)
+
+IMPORTANT GUIDELINES:
+- Be SPECIFIC and DETAILED in your analysis - avoid generic statements
+- Reference ACTUAL skills, experiences, and qualifications from the resume
+- Compare against ACTUAL requirements from the job description
+- Do NOT use placeholder text or generic descriptions
+- Ensure strengths and weaknesses are SPECIFIC to each candidate
+- Use CONCRETE examples from their resume whenever possible
 
 IMPORTANT: Return your analysis as a JSON object with this exact structure, and ONLY the JSON object with no markdown formatting or code blocks:
 {
@@ -257,9 +323,9 @@ IMPORTANT: Return your analysis as a JSON object with this exact structure, and 
     {
       "name": "Candidate Name",
       "score": 85,
-      "strengths": ["Strength 1", "Strength 2", "Strength 3"],
-      "weaknesses": ["Weakness 1", "Weakness 2"],
-      "analysis": "Brief analysis of why this candidate received this ranking.",
+      "strengths": ["Specific strength 1 with details", "Specific strength 2 with details", "Specific strength 3 with details"],
+      "weaknesses": ["Specific weakness 1 with details", "Specific weakness 2 with details"],
+      "analysis": "Specific analysis of why this candidate received this ranking, referencing actual qualifications and requirements.",
       "categoryScores": {
         "technical_skills": 80,
         "experience": 90,
@@ -293,6 +359,7 @@ function generateMockRanking(
   candidates: Candidate[],
   jobDescription: string,
   weightConfig?: WeightConfig,
+  preprocessStats?: { original: number; processed: number; percentReduction: number },
 ): RankingResult {
   // Ensure we have valid candidates
   if (!candidates || candidates.length === 0) {
@@ -307,6 +374,11 @@ function generateMockRanking(
           categoryScores: generateDefaultCategoryScores(),
         },
       ],
+      preprocessStats: preprocessStats || {
+        original: 1000,
+        processed: 700,
+        percentReduction: 30,
+      },
     }
   }
 
@@ -316,9 +388,9 @@ function generateMockRanking(
   // Get weights for different categories
   const weights = getWeightsFromConfig(weightConfig)
 
-  const rankedCandidates = candidates.map((candidate) => {
+  const rankedCandidates = candidates.map((candidate, index) => {
     // Ensure candidate has valid data
-    const name = candidate.name.trim() || "Unnamed Candidate"
+    const name = candidate.name.trim() || `Candidate ${index + 1}`
     const resumeText = (candidate.resume || "").toLowerCase()
 
     // Count matching keywords
@@ -389,7 +461,16 @@ function generateMockRanking(
   // Sort by score
   rankedCandidates.sort((a, b) => b.score - a.score)
 
-  return { rankedCandidates }
+  return {
+    rankedCandidates,
+    preprocessStats: preprocessStats || {
+      original: jobDescription.length + candidates.reduce((total, c) => total + (c.resume?.length || 0), 0),
+      processed: Math.floor(
+        (jobDescription.length + candidates.reduce((total, c) => total + (c.resume?.length || 0), 0)) * 0.7,
+      ),
+      percentReduction: 30,
+    },
+  }
 }
 
 // Helper function to extract potential keywords from job description

@@ -1,0 +1,533 @@
+/**
+ * Utility for automatically detecting candidate names from resume text
+ */
+
+interface NameDetectionResult {
+  name: string
+  confidence: number // 0-1 scale
+}
+
+/**
+ * Detect a candidate's name from their resume text
+ * Uses multiple strategies to identify the most likely name
+ */
+export function detectNameFromResume(resumeText: string): NameDetectionResult {
+  if (!resumeText || typeof resumeText !== "string" || resumeText.trim().length === 0) {
+    return { name: "", confidence: 0 }
+  }
+
+  // Clean and normalize the text
+  const cleanText = resumeText.replace(/\r\n/g, "\n").replace(/\n+/g, "\n").trim()
+
+  // Get the first few lines (where names typically appear)
+  const lines = cleanText.split("\n").slice(0, 20) // Increased from 15 to 20 lines
+
+  // Try different name detection strategies in order of reliability
+  const strategies = [
+    // Strategy 1: Look for a standalone name on its own line at the beginning
+    detectStandaloneName,
+    // Strategy 2: Look for a name with title/heading
+    detectNameWithHeading,
+    // Strategy 3: Look for contact info section with name
+    detectNameFromContactInfo,
+    // Strategy 4: Look for common resume header patterns
+    detectNameFromResumeHeader,
+    // Strategy 5: Look for name in first line
+    detectNameInFirstLine,
+    // Strategy 6: Extract name from email address if present
+    detectNameFromEmail,
+    // Strategy 7: Look for name in the first paragraph
+    detectNameInFirstParagraph,
+  ]
+
+  // Try each strategy in order
+  for (const strategy of strategies) {
+    const result = strategy(lines, cleanText)
+    if (result.confidence > 0.4) {
+      // Lowered threshold from 0.5 to 0.4
+      return result
+    }
+  }
+
+  // If all strategies fail, return empty with low confidence
+  return { name: "", confidence: 0 }
+}
+
+/**
+ * Strategy 1: Detect a standalone name on its own line
+ * This is the most reliable method - names often appear alone on the first line
+ */
+function detectStandaloneName(lines: string[], fullText: string): NameDetectionResult {
+  // Look at the first 5 lines for a standalone name
+  for (let i = 0; i < Math.min(5, lines.length); i++) {
+    const line = lines[i].trim()
+
+    // Skip empty lines
+    if (!line) continue
+
+    // Check if this line looks like a standalone name
+    if (isLikelyName(line) && line.length < 50) {
+      // Higher confidence for earlier lines, especially the first line
+      const confidence = i === 0 ? 0.95 : 0.9 - i * 0.1
+      return { name: formatName(line), confidence }
+    }
+  }
+
+  return { name: "", confidence: 0 }
+}
+
+/**
+ * Strategy 2: Detect a name with a heading/title
+ */
+function detectNameWithHeading(lines: string[], fullText: string): NameDetectionResult {
+  // Common resume headings that might contain or be near names
+  const nameHeadings = [
+    "name:",
+    "full name:",
+    "candidate:",
+    "candidate name:",
+    "applicant:",
+    "applicant name:",
+    "resume of:",
+    "cv of:",
+    "curriculum vitae of:",
+    "profile:",
+    "personal details:",
+    "personal information:",
+    "contact information:",
+    "contact:",
+    "about me:",
+    "about:",
+  ]
+
+  // Check the first 7 lines for headings with names
+  for (let i = 0; i < Math.min(7, lines.length); i++) {
+    const line = lines[i].toLowerCase().trim()
+
+    // Check if line contains a name heading
+    for (const heading of nameHeadings) {
+      if (line.includes(heading)) {
+        // Extract the part after the heading
+        const afterHeading = line.split(heading)[1]?.trim()
+        if (afterHeading && isLikelyName(afterHeading)) {
+          return { name: formatName(afterHeading), confidence: 0.8 }
+        }
+
+        // If heading is at the end of the line, check the next line
+        if (line.endsWith(heading) && i + 1 < lines.length) {
+          const nextLine = lines[i + 1].trim()
+          if (isLikelyName(nextLine)) {
+            return { name: formatName(nextLine), confidence: 0.75 }
+          }
+        }
+      }
+    }
+  }
+
+  return { name: "", confidence: 0 }
+}
+
+/**
+ * Strategy 3: Detect a name from contact information section
+ */
+function detectNameFromContactInfo(lines: string[], fullText: string): NameDetectionResult {
+  // Look for contact info patterns (email, phone) and extract name nearby
+  for (let i = 0; i < Math.min(10, lines.length); i++) {
+    const line = lines[i].trim()
+
+    // If we find contact info (email, phone), the name is likely nearby
+    if (containsContactInfo(line)) {
+      // Check for email and extract username
+      if (line.includes("@")) {
+        // Try to find a name before the email
+        const beforeEmail = line.split("@")[0].trim()
+        const possibleName = beforeEmail.split(/[^a-zA-Z\s]/).filter((part) => part.trim().length > 0)[0]
+
+        if (possibleName && isLikelyName(possibleName)) {
+          return { name: formatName(possibleName), confidence: 0.7 }
+        }
+
+        // Check previous line if available
+        if (i > 0) {
+          const prevLine = lines[i - 1].trim()
+          if (isLikelyName(prevLine)) {
+            return { name: formatName(prevLine), confidence: 0.75 }
+          }
+        }
+      }
+
+      // Check for phone and extract name
+      const phonePattern = /\d{3}[-.\s]?\d{3}[-.\s]?\d{4}/
+      const phoneMatch = line.match(phonePattern)
+      if (phoneMatch) {
+        const phoneIndex = line.indexOf(phoneMatch[0])
+        if (phoneIndex > 0) {
+          const beforePhone = line.substring(0, phoneIndex).trim()
+          if (beforePhone && isLikelyName(beforePhone)) {
+            return { name: formatName(beforePhone), confidence: 0.7 }
+          }
+        }
+
+        // Check previous line if available
+        if (i > 0) {
+          const prevLine = lines[i - 1].trim()
+          if (isLikelyName(prevLine)) {
+            return { name: formatName(prevLine), confidence: 0.75 }
+          }
+        }
+      }
+
+      // Check previous line if available
+      if (i > 0) {
+        const prevLine = lines[i - 1].trim()
+        if (isLikelyName(prevLine)) {
+          return { name: formatName(prevLine), confidence: 0.65 }
+        }
+      }
+
+      // Check next line if available
+      if (i < lines.length - 1) {
+        const nextLine = lines[i + 1].trim()
+        if (isLikelyName(nextLine)) {
+          return { name: formatName(nextLine), confidence: 0.6 }
+        }
+      }
+    }
+  }
+
+  return { name: "", confidence: 0 }
+}
+
+/**
+ * Strategy 4: Look for common resume header patterns
+ */
+function detectNameFromResumeHeader(lines: string[], fullText: string): NameDetectionResult {
+  // Common patterns in resume headers
+  const headerPatterns = [/resume$/i, /curriculum vitae$/i, /cv$/i, /professional resume$/i, /professional cv$/i]
+
+  // Check the first 5 lines for header patterns
+  for (let i = 0; i < Math.min(5, lines.length); i++) {
+    const line = lines[i].trim()
+
+    // Skip empty lines
+    if (!line) continue
+
+    // Check if this line contains a header pattern
+    for (const pattern of headerPatterns) {
+      if (pattern.test(line)) {
+        // Extract the part before the header pattern
+        const beforeHeader = line.split(pattern)[0].trim()
+        if (beforeHeader && isLikelyName(beforeHeader)) {
+          return { name: formatName(beforeHeader), confidence: 0.7 }
+        }
+
+        // If we found a header but no name, check the previous line
+        if (i > 0) {
+          const prevLine = lines[i - 1].trim()
+          if (isLikelyName(prevLine)) {
+            return { name: formatName(prevLine), confidence: 0.65 }
+          }
+        }
+      }
+    }
+  }
+
+  return { name: "", confidence: 0 }
+}
+
+/**
+ * Strategy 5: Check if the first non-empty line looks like a name
+ * This is a high-priority strategy since names often appear at the very top
+ */
+function detectNameInFirstLine(lines: string[], fullText: string): NameDetectionResult {
+  // Find the first non-empty line
+  for (let i = 0; i < Math.min(3, lines.length); i++) {
+    const line = lines[i].trim()
+    if (line) {
+      // If it's short and looks like a name, it's very likely to be the candidate's name
+      if (line.length < 50 && isLikelyName(line)) {
+        // Higher confidence for the very first line
+        const confidence = i === 0 ? 0.85 : 0.75 - i * 0.1
+        return { name: formatName(line), confidence }
+      }
+
+      // If the first line has multiple words, try to extract a name
+      const words = line.split(/\s+/)
+      if (words.length >= 2 && words.length <= 5) {
+        // Take the first two words as a potential name
+        const potentialName = words.slice(0, 2).join(" ")
+        if (isLikelyName(potentialName)) {
+          return { name: formatName(potentialName), confidence: 0.7 }
+        }
+      }
+
+      break // Only check the first non-empty line
+    }
+  }
+
+  return { name: "", confidence: 0 }
+}
+
+/**
+ * Strategy 6: Extract name from email address if present
+ */
+function detectNameFromEmail(lines: string[], fullText: string): NameDetectionResult {
+  // Look for email addresses in the text
+  const emailRegex = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/
+  const emailMatch = fullText.match(emailRegex)
+
+  if (emailMatch) {
+    const email = emailMatch[0]
+    const username = email.split("@")[0]
+
+    // Try to extract a name from the username
+    // Remove numbers and special characters
+    const cleanUsername = username.replace(/[0-9._-]/g, " ").trim()
+
+    // Split by camelCase, periods, underscores, etc.
+    const nameParts = cleanUsername.split(/(?=[A-Z])|\s+/).filter((part) => part.length > 1)
+
+    if (nameParts.length >= 2) {
+      // Format the name parts properly
+      const formattedName = nameParts
+        .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+        .join(" ")
+
+      return { name: formattedName, confidence: 0.6 }
+    } else if (nameParts.length === 1 && nameParts[0].length > 3) {
+      // If we only have one name part but it's reasonably long
+      return {
+        name: nameParts[0].charAt(0).toUpperCase() + nameParts[0].slice(1).toLowerCase(),
+        confidence: 0.5,
+      }
+    }
+  }
+
+  return { name: "", confidence: 0 }
+}
+
+/**
+ * Strategy 7: Look for name in the first paragraph
+ */
+function detectNameInFirstParagraph(lines: string[], fullText: string): NameDetectionResult {
+  // Get the first paragraph (first few non-empty lines)
+  let firstParagraph = ""
+  let lineCount = 0
+
+  for (const line of lines) {
+    if (line.trim()) {
+      firstParagraph += " " + line.trim()
+      lineCount++
+      if (lineCount >= 3) break // Consider first 3 non-empty lines as first paragraph
+    }
+  }
+
+  firstParagraph = firstParagraph.trim()
+
+  // Look for patterns like "I am [Name]" or "My name is [Name]"
+  const namePatterns = [
+    /I am ([A-Z][a-z]+ [A-Z][a-z]+)/i,
+    /My name is ([A-Z][a-z]+ [A-Z][a-z]+)/i,
+    /This is ([A-Z][a-z]+ [A-Z][a-z]+)/i,
+    /([A-Z][a-z]+ [A-Z][a-z]+) is a/i,
+  ]
+
+  for (const pattern of namePatterns) {
+    const match = firstParagraph.match(pattern)
+    if (match && match[1]) {
+      return { name: formatName(match[1]), confidence: 0.65 }
+    }
+  }
+
+  return { name: "", confidence: 0 }
+}
+
+/**
+ * Check if text contains contact information
+ */
+function containsContactInfo(text: string): boolean {
+  // Check for email pattern
+  const emailPattern = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/
+
+  // Check for phone pattern - using a simple pattern to avoid regex issues
+  const phonePattern = /\d{3}[-.\s]?\d{3}[-.\s]?\d{4}/
+
+  // Check for LinkedIn or other social media
+  const socialPattern = /linkedin\.com|github\.com|twitter\.com|facebook\.com/i
+
+  // Check for website
+  const websitePattern = /www\.|http:|https:/i
+
+  return emailPattern.test(text) || phonePattern.test(text) || socialPattern.test(text) || websitePattern.test(text)
+}
+
+/**
+ * Check if text is likely to be a person's name
+ */
+function isLikelyName(text: string): boolean {
+  // Remove common prefixes
+  const cleanText = text.replace(/^(mr\.|mrs\.|ms\.|dr\.|prof\.)\s+/i, "").trim()
+
+  // Too short to be a name
+  if (cleanText.length < 3) return false
+
+  // Too long to be just a name
+  if (cleanText.length > 50) return false
+
+  // Check for common name patterns
+
+  // Pattern: First Last (possibly with middle initial/name)
+  const namePattern1 = /^[A-Z][a-z]+(\s[A-Z]\.?)?(\s[A-Z][a-z]+)+$/
+
+  // Pattern: Last, First (possibly with middle initial/name)
+  const namePattern2 = /^[A-Z][a-z]+,\s[A-Z][a-z]+(\s[A-Z]\.?)?$/
+
+  // Pattern: ALL CAPS NAME
+  const namePattern3 = /^[A-Z]+(\s[A-Z]+)+$/
+
+  // Pattern: First Middle Last (all properly capitalized)
+  const namePattern4 = /^[A-Z][a-z]+\s[A-Z][a-z]+\s[A-Z][a-z]+$/
+
+  // Check if text contains too many numbers or special chars to be a name
+  const nonNameChars = /[0-9$%^&*()_+|~=`{}[\]:";'<>?,/]/
+  if (nonNameChars.test(cleanText)) return false
+
+  // Check if text contains words that suggest it's not a name
+  const nonNameWords =
+    /resume|curriculum|vitae|cv|profile|summary|objective|experience|education|skills|references|contact|address|phone|email|website|www|http|linkedin|github|twitter|facebook/i
+  if (nonNameWords.test(cleanText)) return false
+
+  // Check against our patterns
+  return (
+    namePattern1.test(cleanText) ||
+    namePattern2.test(cleanText) ||
+    namePattern3.test(cleanText) ||
+    namePattern4.test(cleanText) ||
+    // Fallback: at least 2 words, each starting with capital letter
+    /^([A-Z][a-z]+\s+){1,}[A-Z][a-z]+$/.test(cleanText) ||
+    // Single word that looks like a name (at least 3 chars, starts with capital)
+    /^[A-Z][a-z]{2,}$/.test(cleanText)
+  )
+}
+
+/**
+ * Format a detected name properly
+ */
+function formatName(name: string): string {
+  // Handle "Last, First" format
+  if (name.includes(",")) {
+    const parts = name.split(",").map((part) => part.trim())
+    if (parts.length >= 2) {
+      return `${parts[1]} ${parts[0]}`
+    }
+  }
+
+  // Handle ALL CAPS names
+  if (/^[A-Z\s]+$/.test(name)) {
+    return name
+      .split(/\s+/)
+      .map((word) => word.charAt(0) + word.slice(1).toLowerCase())
+      .join(" ")
+  }
+
+  // Already properly formatted
+  return name.trim()
+}
+
+/**
+ * Generate a name from an email address
+ * This is used as a fallback when no name can be detected
+ */
+export function generateNameFromEmail(email: string): string {
+  if (!email || !email.includes("@")) return ""
+
+  const username = email.split("@")[0]
+
+  // Remove numbers and special characters
+  const cleanUsername = username.replace(/[0-9._-]/g, " ").trim()
+
+  // Split by camelCase, periods, underscores, etc.
+  const nameParts = cleanUsername.split(/(?=[A-Z])|\s+/).filter((part) => part.length > 0)
+
+  if (nameParts.length >= 2) {
+    // Format as First Last
+    return nameParts.map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase()).join(" ")
+  } else if (nameParts.length === 1) {
+    // Just one part, capitalize it
+    return nameParts[0].charAt(0).toUpperCase() + nameParts[0].slice(1).toLowerCase()
+  }
+
+  return ""
+}
+
+/**
+ * Extract email from text
+ */
+export function extractEmail(text: string): string {
+  const emailRegex = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/
+  const match = text.match(emailRegex)
+  return match ? match[0] : ""
+}
+
+/**
+ * Extract a candidate's name from a filename
+ * @param filename The filename to extract the name from (e.g., "john_doe.pdf")
+ * @returns The formatted name (e.g., "John Doe")
+ */
+export function extractNameFromFilename(filename: string): string {
+  if (!filename) return ""
+
+  // Remove file extension
+  const nameWithoutExtension = filename.split(".").slice(0, -1).join(".")
+
+  // Replace underscores, hyphens, and dots with spaces
+  let formattedName = nameWithoutExtension.replace(/[_\-.]/g, " ")
+
+  // Remove content in parentheses like "(2)" or "(copy)"
+  formattedName = formattedName.replace(/$$[^)]*$$/g, "")
+
+  // Remove numbers and special characters
+  formattedName = formattedName.replace(/[^a-zA-Z\s]/g, "")
+
+  // Split into words
+  let words = formattedName.split(/\s+/).filter((word) => word.length > 0)
+
+  // Filter out common non-name words
+  const nonNameWords = [
+    "resume",
+    "cv",
+    "curriculum",
+    "vitae",
+    "job",
+    "application",
+    "copy",
+    "final",
+    "draft",
+    "version",
+    "updated",
+    "new",
+    "document",
+    "file",
+    "scan",
+    "scanned",
+    "latest",
+    "edited",
+    "portfolio",
+    "profile",
+    "professional",
+    "career",
+  ]
+
+  words = words.filter((word) => !nonNameWords.includes(word.toLowerCase()))
+
+  // If no words left after filtering, return empty string
+  if (words.length === 0) return ""
+
+  // Capitalize each word
+  formattedName = words.map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()).join(" ")
+
+  // Trim extra spaces
+  formattedName = formattedName.trim()
+
+  return formattedName
+}
