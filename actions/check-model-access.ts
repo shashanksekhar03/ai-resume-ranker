@@ -1,7 +1,6 @@
 "use server"
 
 import { MODEL, FALLBACK_MODEL, OPENAI_API_KEY } from "@/lib/ai-config"
-import { generateText, openai } from "@/utils/ai-service"
 
 interface ModelAccessResult {
   success: boolean
@@ -14,17 +13,33 @@ export async function checkModelAccess(): Promise<ModelAccessResult> {
   try {
     console.log("Checking model access...")
 
-    // Try to use the model with our fallback service
+    // Try to use the model with our direct API call
     try {
       console.log(`Testing access to ${FALLBACK_MODEL}...`)
-      const { text, usedFallback } = await generateText({
-        model: openai(FALLBACK_MODEL, {
-          apiKey: OPENAI_API_KEY,
+
+      // Make a direct request to OpenAI API
+      const response = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${OPENAI_API_KEY}`,
+        },
+        body: JSON.stringify({
+          model: FALLBACK_MODEL,
+          messages: [{ role: "user", content: "Respond with 'OK' if you can read this message." }],
+          temperature: 0.1,
+          max_tokens: 10,
         }),
-        prompt: "Respond with 'OK' if you can read this message.",
-        temperature: 0.1,
-        maxTokens: 10,
       })
+
+      if (!response.ok) {
+        const errorData = await response.json()
+        console.error("API error:", errorData)
+        throw new Error(`API error: ${errorData.error?.message || "Unknown error"}`)
+      }
+
+      const data = await response.json()
+      const text = data.choices[0]?.message?.content || ""
 
       console.log(`Response from ${FALLBACK_MODEL}: "${text}"`)
 
@@ -32,18 +47,34 @@ export async function checkModelAccess(): Promise<ModelAccessResult> {
         // If basic model works, try the advanced model
         try {
           console.log(`Testing access to ${MODEL}...`)
-          const advancedResponse = await generateText({
-            model: openai(MODEL, {
-              apiKey: OPENAI_API_KEY,
+
+          // Make a direct request to OpenAI API for the advanced model
+          const advancedResponse = await fetch("https://api.openai.com/v1/chat/completions", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${OPENAI_API_KEY}`,
+            },
+            body: JSON.stringify({
+              model: MODEL,
+              messages: [{ role: "user", content: "Respond with 'OK' if you can read this message." }],
+              temperature: 0.1,
+              max_tokens: 10,
             }),
-            prompt: "Respond with 'OK' if you can read this message.",
-            temperature: 0.1,
-            maxTokens: 10,
           })
 
-          console.log(`Response from ${MODEL}: "${advancedResponse.text}"`)
+          if (!advancedResponse.ok) {
+            const errorData = await advancedResponse.json()
+            console.error("Advanced model API error:", errorData)
+            throw new Error(`Advanced model API error: ${errorData.error?.message || "Unknown error"}`)
+          }
 
-          if (advancedResponse.text.toLowerCase().includes("ok")) {
+          const advancedData = await advancedResponse.json()
+          const advancedText = advancedData.choices[0]?.message?.content || ""
+
+          console.log(`Response from ${MODEL}: "${advancedText}"`)
+
+          if (advancedText.toLowerCase().includes("ok")) {
             return {
               success: true,
               model: MODEL,
@@ -54,7 +85,7 @@ export async function checkModelAccess(): Promise<ModelAccessResult> {
               success: false,
               model: FALLBACK_MODEL,
               error: `Your API key works, but ${MODEL} returned an unexpected response. Using ${FALLBACK_MODEL} instead.`,
-              details: `Response: "${advancedResponse.text}"`,
+              details: `Response: "${advancedText}"`,
             }
           }
         } catch (advancedModelError) {

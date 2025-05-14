@@ -2,7 +2,6 @@
 
 import type { WeightCategory } from "@/types/resume-ranker"
 import { MODEL, FALLBACK_MODEL, OPENAI_API_KEY } from "@/lib/ai-config"
-import { generateText, openai } from "@/utils/ai-service"
 
 // Helper function to clean AI response text and extract JSON
 function extractJsonFromResponse(text: string): string {
@@ -61,32 +60,72 @@ Return your analysis as a JSON array with this exact structure, and ONLY the JSO
       // Try with preferred model first, fall back to simpler model if needed
       try {
         // Try to generate weights using the preferred model
-        const response = await generateText({
-          model: openai(MODEL, {
-            temperature: 0.2, // Lower temperature for more consistent results
-            apiKey: OPENAI_API_KEY,
+        const response = await fetch("https://api.openai.com/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${OPENAI_API_KEY}`,
+          },
+          body: JSON.stringify({
+            model: MODEL,
+            messages: [
+              {
+                role: "system",
+                content:
+                  "You are an expert HR professional who specializes in analyzing job requirements and determining the importance of different candidate attributes. Respond ONLY with valid JSON in the exact format specified in the prompt. Do not include markdown formatting, code blocks, or any text outside the JSON array.",
+              },
+              { role: "user", content: prompt },
+            ],
+            temperature: 0.2,
+            max_tokens: 1000,
           }),
-          prompt,
-          system:
-            "You are an expert HR professional who specializes in analyzing job requirements and determining the importance of different candidate attributes. Respond ONLY with valid JSON in the exact format specified in the prompt. Do not include markdown formatting, code blocks, or any text outside the JSON array.",
         })
 
-        return processWeightsResponse(response.text)
+        if (!response.ok) {
+          const errorData = await response.json()
+          console.error("OpenAI API error:", errorData)
+          throw new Error(`OpenAI API error: ${errorData.error?.message || "Unknown error"}`)
+        }
+
+        const data = await response.json()
+        const text = data.choices[0]?.message?.content || ""
+
+        return processWeightsResponse(text)
       } catch (preferredModelError) {
         console.error("Error with preferred model, trying fallback model:", preferredModelError)
 
         // Try with the fallback model
-        const response = await generateText({
-          model: openai(FALLBACK_MODEL, {
+        const response = await fetch("https://api.openai.com/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${OPENAI_API_KEY}`,
+          },
+          body: JSON.stringify({
+            model: FALLBACK_MODEL,
+            messages: [
+              {
+                role: "system",
+                content:
+                  "You are an expert HR professional who specializes in analyzing job requirements and determining the importance of different candidate attributes. Respond ONLY with valid JSON in the exact format specified in the prompt. Do not include markdown formatting, code blocks, or any text outside the JSON array.",
+              },
+              { role: "user", content: prompt },
+            ],
             temperature: 0.2,
-            apiKey: OPENAI_API_KEY,
+            max_tokens: 1000,
           }),
-          prompt,
-          system:
-            "You are an expert HR professional who specializes in analyzing job requirements and determining the importance of different candidate attributes. Respond ONLY with valid JSON in the exact format specified in the prompt. Do not include markdown formatting, code blocks, or any text outside the JSON array.",
         })
 
-        return processWeightsResponse(response.text)
+        if (!response.ok) {
+          const errorData = await response.json()
+          console.error("OpenAI API error:", errorData)
+          throw new Error(`OpenAI API error: ${errorData.error?.message || "Unknown error"}`)
+        }
+
+        const data = await response.json()
+        const text = data.choices[0]?.message?.content || ""
+
+        return processWeightsResponse(text)
       }
     } catch (apiError) {
       console.error("OpenAI API Error:", apiError)

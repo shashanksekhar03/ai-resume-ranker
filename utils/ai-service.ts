@@ -1,6 +1,6 @@
 /**
- * AI service that works with the OpenAI API
- * This provides a consistent interface for AI operations
+ * AI service that works with the OpenAI API directly
+ * This provides a consistent interface for AI operations without external dependencies
  */
 
 import { OPENAI_API_KEY, MODEL, FALLBACK_MODEL } from "@/lib/ai-config"
@@ -25,11 +25,7 @@ interface GenerateTextResult {
 export async function generateText(options: GenerateTextOptions): Promise<GenerateTextResult> {
   try {
     // Extract model name from the model parameter
-    let modelName = options.model
-    if (typeof modelName === "object" && modelName !== null) {
-      // If it's an object (from openai() function), try to extract the model name
-      modelName = MODEL
-    }
+    let modelName = typeof options.model === "string" ? options.model : MODEL
 
     // Fallback to a simpler model if needed
     if (modelName !== MODEL && modelName !== FALLBACK_MODEL) {
@@ -78,7 +74,7 @@ export async function generateText(options: GenerateTextOptions): Promise<Genera
     console.error("Error in generateText:", error)
 
     // If we haven't tried the fallback model yet, try it now
-    if (!options.model.includes(FALLBACK_MODEL)) {
+    if (options.model !== FALLBACK_MODEL) {
       console.log(`Attempting fallback to ${FALLBACK_MODEL} after error`)
       return generateTextWithFallbackModel(options)
     }
@@ -96,11 +92,6 @@ export async function generateText(options: GenerateTextOptions): Promise<Genera
  */
 async function generateTextWithFallbackModel(options: GenerateTextOptions): Promise<GenerateTextResult> {
   try {
-    const fallbackOptions = {
-      ...options,
-      model: FALLBACK_MODEL,
-    }
-
     const response = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -141,22 +132,8 @@ async function generateTextWithFallbackModel(options: GenerateTextOptions): Prom
 
 /**
  * Mock function for openai model configuration
- * This mimics the behavior of the AI SDK's openai function
+ * This mimics the behavior of the AI SDK's openai function but doesn't require the package
  */
 export function openai(model: string, options?: any): string {
   return model
-}
-
-/**
- * Check if the AI SDK is available
- */
-export function isAiSdkAvailable(): boolean {
-  try {
-    // Try to import the AI SDK
-    require("ai")
-    require("@ai-sdk/openai")
-    return true
-  } catch (error) {
-    return false
-  }
 }

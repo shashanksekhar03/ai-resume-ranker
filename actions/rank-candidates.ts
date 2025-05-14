@@ -1,7 +1,7 @@
 "use server"
 
 import type { Candidate, RankingResult, WeightConfig } from "@/types/resume-ranker"
-import { MODEL, FALLBACK_MODEL, OPENAI_API_KEY } from "@/lib/ai-config"
+import { MODEL, FALLBACK_MODEL } from "@/lib/ai-config"
 
 // Import the text preprocessor
 import { preprocessText } from "@/utils/text-preprocessor"
@@ -9,8 +9,8 @@ import { parseDocument } from "@/utils/document-parser"
 import { detectNameFromResume, extractEmail, generateNameFromEmail } from "@/utils/name-detector"
 import { filterContactInfo } from "@/utils/contact-filter"
 
-// Import our fallback AI service
-import { generateText, openai } from "@/utils/ai-service"
+// Import our custom AI service
+import { generateText } from "@/utils/ai-service"
 
 interface RankCandidatesProps {
   jobDescription: string
@@ -81,7 +81,6 @@ export async function rankCandidates({
     finalJobDescription = processedJobDescription
 
     // Process candidate resume files if provided
-
     if (candidateFiles) {
       for (const [id, file] of Object.entries(candidateFiles)) {
         if (file) {
@@ -180,15 +179,13 @@ export async function rankCandidates({
       // First try with the preferred model
       try {
         const response = await generateText({
-          model: openai(MODEL, {
-            temperature: 0.2, // Lower temperature for more consistent results
-            maxTokens: 4000, // Ensure enough tokens for detailed analysis
-            apiKey: OPENAI_API_KEY,
-          }),
+          model: MODEL,
           prompt,
           system: `You are an expert HR professional and recruiter with deep experience in matching candidates to job requirements.
 Your task is to analyze each candidate's resume against the job description and provide a detailed ranking.
 Respond ONLY with valid JSON in the exact format specified in the prompt. Do not include markdown formatting, code blocks, or any text outside the JSON object.`,
+          temperature: 0.2, // Lower temperature for more consistent results
+          maxTokens: 4000, // Ensure enough tokens for detailed analysis
         })
 
         // Process the response
@@ -221,15 +218,13 @@ Respond ONLY with valid JSON in the exact format specified in the prompt. Do not
 
         // Try with the fallback model
         const response = await generateText({
-          model: openai(FALLBACK_MODEL, {
-            temperature: 0.2,
-            maxTokens: 4000,
-            apiKey: OPENAI_API_KEY,
-          }),
+          model: FALLBACK_MODEL,
           prompt,
           system: `You are an expert HR professional and recruiter with deep experience in matching candidates to job requirements.
 Your task is to analyze each candidate's resume against the job description and provide a detailed ranking.
 Respond ONLY with valid JSON in the exact format specified in the prompt. Do not include markdown formatting, code blocks, or any text outside the JSON object.`,
+          temperature: 0.2,
+          maxTokens: 4000,
         })
 
         // Process the response
